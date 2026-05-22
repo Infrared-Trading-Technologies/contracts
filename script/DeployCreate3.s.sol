@@ -9,6 +9,8 @@ import { Integer } from "../src/weiroll-helpers/Integer.sol";
 import { Bytes32 } from "../src/weiroll-helpers/Bytes32.sol";
 import { BlockchainInfo } from "../src/weiroll-helpers/BlockchainInfo.sol";
 import { ArraysConverter } from "../src/weiroll-helpers/ArraysConverter.sol";
+import { MathHelpers } from "../src/weiroll-helpers/MathHelpers.sol";
+import { SignedMathHelpers } from "../src/weiroll-helpers/SignedMathHelpers.sol";
 
 /// @notice Interface for ZeframLou's CREATE3 Factory
 /// @dev Deployed at 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf on all supported chains
@@ -44,6 +46,8 @@ contract DeployCreate3 is Script {
     string public constant BYTES32 = "Bytes32";
     string public constant BLOCKCHAIN_INFO = "BlockchainInfo";
     string public constant ARRAYS_CONVERTER = "ArraysConverter";
+    string public constant MATH_HELPERS = "MathHelpers";
+    string public constant SIGNED_MATH_HELPERS = "SignedMathHelpers";
 
     // ExecutionProxy bytecode changes every time the Weiroll VM dispatcher does
     // (extended-command decoder, dispatcher, flag layout, FLAG_DATA, etc.). Its
@@ -66,6 +70,8 @@ contract DeployCreate3 is Script {
         address bytes32Helper;
         address blockchainInfo;
         address arraysConverter;
+        address mathHelpers;
+        address signedMathHelpers;
         bool[] deployed; // true if newly deployed, false if already existed (indexed in enumeration order)
         bool routerDeployed; // true if Router was newly deployed in this run
     }
@@ -215,7 +221,7 @@ contract DeployCreate3 is Script {
         console2.log("CREATE3 Factory:", CREATE3_FACTORY);
         console2.log("");
 
-        result.deployed = new bool[](7);
+        result.deployed = new bool[](9);
 
         vm.startBroadcast();
 
@@ -244,6 +250,12 @@ contract DeployCreate3 is Script {
         (result.arraysConverter, result.deployed[6]) =
             deployIfNeeded(getSalt(ARRAYS_CONVERTER), type(ArraysConverter).creationCode, ARRAYS_CONVERTER);
 
+        (result.mathHelpers, result.deployed[7]) =
+            deployIfNeeded(getSalt(MATH_HELPERS), type(MathHelpers).creationCode, MATH_HELPERS);
+
+        (result.signedMathHelpers, result.deployed[8]) =
+            deployIfNeeded(getSalt(SIGNED_MATH_HELPERS), type(SignedMathHelpers).creationCode, SIGNED_MATH_HELPERS);
+
         // If the broadcasting account is also the Router owner, wire the pending executor in the
         // same broadcast. The owner multisig must still submit a follow-up `acceptExecutor()` tx
         // to activate the executor -- two-step transfer per FR-10.
@@ -265,11 +277,11 @@ contract DeployCreate3 is Script {
         console2.log("Router:        ", result.router);
         console2.log("ExecutionProxy:", result.executionProxy);
         uint256 newlyDeployed = 0;
-        for (uint256 i = 0; i < 7; i++) {
+        for (uint256 i = 0; i < 9; i++) {
             if (result.deployed[i]) newlyDeployed++;
         }
         console2.log("Newly deployed:", newlyDeployed);
-        console2.log("Already deployed:", 7 - newlyDeployed);
+        console2.log("Already deployed:", 9 - newlyDeployed);
         console2.log("Router owner:", routerOwner);
         console2.log("");
         console2.log("[REMINDER] acceptExecutor() must be invoked by the Router owner multisig");
@@ -317,5 +329,13 @@ contract DeployCreate3 is Script {
 
         address arraysConverter = predictAddress(deployer, ARRAYS_CONVERTER);
         console2.log("ArraysConverter:", arraysConverter, isDeployed(arraysConverter) ? "(deployed)" : "(not deployed)");
+
+        address mathHelpers = predictAddress(deployer, MATH_HELPERS);
+        console2.log("MathHelpers:", mathHelpers, isDeployed(mathHelpers) ? "(deployed)" : "(not deployed)");
+
+        address signedMathHelpers = predictAddress(deployer, SIGNED_MATH_HELPERS);
+        console2.log(
+            "SignedMathHelpers:", signedMathHelpers, isDeployed(signedMathHelpers) ? "(deployed)" : "(not deployed)"
+        );
     }
 }

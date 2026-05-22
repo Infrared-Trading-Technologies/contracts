@@ -58,7 +58,9 @@
     "Integer",
     "Bytes32",
     "BlockchainInfo",
-    "ArraysConverter"
+    "ArraysConverter",
+    "MathHelpers",
+    "SignedMathHelpers"
   ],
   "saltPrefix": "infrared.contracts.v1"
 }

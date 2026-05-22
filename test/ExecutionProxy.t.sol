@@ -462,6 +462,40 @@ contract ExecutionProxyTest is Test {
         assertEq(address(target).balance, balanceBefore);
     }
 
+    /// @notice Prove that a VALUECALL's value can be sourced from a state slot written
+    ///         by a prior command's return -- not just a pre-allocated literal slot.
+    ///         This is the on-chain prerequisite for descry's SendNativeEth.Amount
+    ///         accepting a ref.Uint256 sourced from helpers.EthBalance (or any
+    ///         uint256-returning producer): command[0] STATICCALL writes the balance
+    ///         into state[2]; command[1] VALUECALL+FLAG_DATA reads state[2] as the
+    ///         value, sending exactly that amount to a receive()-only target.
+    function test_FlagData_ValueFromPriorCommandReturn() public {
+        uint256 amount = 0.42 ether;
+        tokenA.mint(address(proxy), amount); // balanceOf(proxy) will return `amount`
+
+        ReceiveOnlyTarget target = new ReceiveOnlyTarget();
+
+        // state[0] = address(proxy)  -- arg to balanceOf
+        // state[1] = empty bytes     -- FLAG_DATA empty calldata
+        // state[2] = placeholder     -- will be overwritten by command[0]'s return
+        bytes[] memory state = WeirollTestHelper.createState3(
+            WeirollTestHelper.encodeAddress(address(proxy)), bytes(""), bytes("")
+        );
+
+        // commands[0]: STATICCALL tokenA.balanceOf(state[0]) -> state[2]
+        // commands[1]: VALUECALL+FLAG_DATA target, value=state[2], data=state[1]
+        bytes32[] memory commands = new bytes32[](2);
+        commands[0] =
+            WeirollTestHelper.buildStaticCallOneArg(address(tokenA), bytes4(0x70a08231), 0, 2);
+        commands[1] = WeirollTestHelper.buildValueCallWithRawData(address(target), 2, 1);
+
+        proxy.executePath{ value: amount }(commands, state);
+
+        assertEq(target.calls(), 1);
+        assertEq(target.totalReceived(), amount, "value must equal prior command's return");
+        assertEq(address(target).balance, amount);
+    }
+
     /// @notice Plain VALUECALL (no FLAG_DATA) still goes through buildInputs and lands
     ///         exactly as before. Sanity check that the dispatcher split did not
     ///         regress the legacy path.
