@@ -224,6 +224,19 @@ generate_registry() {
             continue
         fi
 
+        # Skip the registry row when no code is deployed at the predicted
+        # address. CREATE3 hands out a deterministic address whether or
+        # not the contract was actually deployed on this chain, so this
+        # check is what lets conditionally-deployed contracts (today:
+        # UniswapV4SwapHelpers on chains with no Universal Router config)
+        # stay out of the per-chain registry without special-casing.
+        local code_at_addr
+        code_at_addr=$(cast code "$predicted_addr" --rpc-url "$rpc_url" 2>/dev/null || echo "0x")
+        if [[ "$code_at_addr" == "0x" || -z "$code_at_addr" ]]; then
+            echo -e "${YELLOW}Skipping $contract: no code at $predicted_addr on chain $chain_id${NC}"
+            continue
+        fi
+
         # Match the contract against this broadcast's inner CREATE3 deploys
         # (forge records them under transactions[].additionalContracts[]). If
         # absent, the contract was already on-chain before this run — preserve
@@ -527,12 +540,29 @@ verify() {
     local router_owner="${ROUTER_OWNER:-${OWNER_ADDRESS:-$(jq -r '.owner' "$registry_file")}}"
     local router_liquidator="${ROUTER_LIQUIDATOR:-$router_owner}"
 
+    # Universal Router 2.1.1 addresses, mirrored from
+    # script/DeployCreate3.sol getUniversalRouter(). Needed here for the
+    # UniswapV4SwapHelpers constructor-args ABI encoding at verify time.
+    local universal_router=""
+    case "$chain_id" in
+        1) universal_router="0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA" ;;
+        8453) universal_router="0xFdf682F51FE81Aa4898F0AE2163d8A55c127fbC7" ;;
+    esac
+    local permit2_addr="0x000000000022D473030F116dDEE9F6B43aC78BA3"
+
     # Verify all contracts from chains.json
     while IFS= read -r contract; do
         local addr
-        addr=$(jq -r ".contracts.${contract}.address" "$registry_file")
+        addr=$(jq -r ".contracts.${contract}.address // empty" "$registry_file")
         local path
         path=$(get_contract_path "$contract")
+
+        # Skip contracts that aren't in this chain's registry (e.g.
+        # UniswapV4SwapHelpers on a testnet that skipped deployment).
+        if [[ -z "$addr" || "$addr" == "null" ]]; then
+            echo -e "${YELLOW}Skipping $contract: not present in registry for chain $chain_id${NC}"
+            continue
+        fi
 
         echo "Verifying $contract at $addr..."
 
@@ -543,6 +573,20 @@ verify() {
                 --verifier-url "$api_url" \
                 --etherscan-api-key "$api_key" \
                 --constructor-args "$(cast abi-encode 'constructor(address,address)' "$router_owner" "$router_liquidator")" \
+                --watch || echo -e "${YELLOW}$contract verification may have failed or already verified${NC}"
+        elif [[ "$contract" == "UniswapV4SwapHelpers" ]]; then
+            # UniswapV4SwapHelpers has constructor args:
+            # (IUniversalRouter universalRouter, IPermit2 permit2).
+            # Both encoded as plain `address` for ABI purposes.
+            if [[ -z "$universal_router" ]]; then
+                echo -e "${YELLOW}Skipping $contract verification: no Universal Router address known for chain $chain_id${NC}"
+                continue
+            fi
+            forge verify-contract "$addr" "$path" \
+                --chain-id "$chain_id" \
+                --verifier-url "$api_url" \
+                --etherscan-api-key "$api_key" \
+                --constructor-args "$(cast abi-encode 'constructor(address,address)' "$universal_router" "$permit2_addr")" \
                 --watch || echo -e "${YELLOW}$contract verification may have failed or already verified${NC}"
         else
             # ExecutionProxy (stateless post-refactor) and all Weiroll helpers have no constructor args.

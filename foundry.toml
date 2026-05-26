@@ -29,6 +29,13 @@ fs_permissions = [
     { access = "read", path = "./out" },
 ]
 
+# Suppress compiler warnings emitted from non-src code (Foundry test
+# harness, deployment scripts, third-party deps). The `src/` tree stays
+# subject to all compiler warnings. Note: this controls Solidity compiler
+# warnings only; forge-lint diagnostics are configured separately under
+# the [lint] section.
+ignored_warnings_from = ["lib", "script", "test", "dependencies"]
+
 # Formatting
 fmt = { line_length = 120, tab_width = 4, bracket_spacing = true }
 

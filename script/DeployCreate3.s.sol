@@ -11,6 +11,7 @@ import { BlockchainInfo } from "../src/weiroll-helpers/BlockchainInfo.sol";
 import { ArraysConverter } from "../src/weiroll-helpers/ArraysConverter.sol";
 import { MathHelpers } from "../src/weiroll-helpers/MathHelpers.sol";
 import { SignedMathHelpers } from "../src/weiroll-helpers/SignedMathHelpers.sol";
+import { UniswapV4SwapHelpers, IUniversalRouter, IPermit2 } from "../src/weiroll-helpers/UniswapV4SwapHelpers.sol";
 
 /// @notice Interface for ZeframLou's CREATE3 Factory
 /// @dev Deployed at 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf on all supported chains
@@ -48,6 +49,12 @@ contract DeployCreate3 is Script {
     string public constant ARRAYS_CONVERTER = "ArraysConverter";
     string public constant MATH_HELPERS = "MathHelpers";
     string public constant SIGNED_MATH_HELPERS = "SignedMathHelpers";
+    string public constant UNISWAP_V4_SWAP_HELPERS = "UniswapV4SwapHelpers";
+
+    // Canonical Permit2 singleton — same address on every EVM chain
+    // Uniswap publishes Permit2 to. Used as the default constructor arg
+    // for UniswapV4SwapHelpers when no override is provided.
+    address public constant CANONICAL_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     // ExecutionProxy bytecode changes every time the Weiroll VM dispatcher does
     // (extended-command decoder, dispatcher, flag layout, FLAG_DATA, etc.). Its
@@ -72,6 +79,7 @@ contract DeployCreate3 is Script {
         address arraysConverter;
         address mathHelpers;
         address signedMathHelpers;
+        address uniswapV4SwapHelpers;
         bool[] deployed; // true if newly deployed, false if already existed (indexed in enumeration order)
         bool routerDeployed; // true if Router was newly deployed in this run
     }
@@ -109,6 +117,49 @@ contract DeployCreate3 is Script {
             return liq;
         } catch {
             return msg.sender;
+        }
+    }
+
+    /// @notice Resolves the chain's Universal Router address.
+    /// @dev UR is deployed per chain by Uniswap at chain-specific
+    ///      addresses (NOT a CREATE3 singleton). For mainnets we hardcode
+    ///      the canonical Universal Router 2.1.1 deployments per
+    ///      https://developers.uniswap.org/docs/protocols/v4/deployments
+    ///      so `./deploy.sh deploy <chain>` just works.
+    ///
+    ///      UNIVERSAL_ROUTER env var overrides the hardcoded value — set
+    ///      it on testnets, custom forks, or when Uniswap rotates UR. A
+    ///      return value of address(0) signals "no UR configured for this
+    ///      chain"; the deploy loop detects it and skips
+    ///      UniswapV4SwapHelpers on that chain (testnets currently).
+    ///
+    ///      Adding a new chain: add a `block.chainid` arm below with the
+    ///      verified UR address from Uniswap's deployments page. No
+    ///      chains.json edit needed.
+    function getUniversalRouter() public view returns (address) {
+        try vm.envAddress("UNIVERSAL_ROUTER") returns (address ur) {
+            require(ur != address(0), "UNIVERSAL_ROUTER is zero");
+            return ur;
+        } catch {}
+
+        // Universal Router 2.1.1 — canonical deployments per
+        // https://developers.uniswap.org/docs/protocols/v4/deployments
+        uint256 cid = block.chainid;
+        if (cid == 1) return 0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA; // Ethereum mainnet
+        if (cid == 8453) return 0xFdf682F51FE81Aa4898F0AE2163d8A55c127fbC7; // Base
+        return address(0);
+    }
+
+    /// @notice Resolves the Permit2 address, defaulting to the canonical
+    ///         singleton at 0x000000000022D473030F116dDEE9F6B43aC78BA3.
+    /// @dev PERMIT2 env var only needed for non-canonical chains (custom
+    ///      Permit2 forks); standard chains use the singleton.
+    function getPermit2() public view returns (address) {
+        try vm.envAddress("PERMIT2") returns (address p2) {
+            require(p2 != address(0), "PERMIT2 is zero");
+            return p2;
+        } catch {
+            return CANONICAL_PERMIT2;
         }
     }
 
@@ -221,7 +272,7 @@ contract DeployCreate3 is Script {
         console2.log("CREATE3 Factory:", CREATE3_FACTORY);
         console2.log("");
 
-        result.deployed = new bool[](9);
+        result.deployed = new bool[](10);
 
         vm.startBroadcast();
 
@@ -256,6 +307,35 @@ contract DeployCreate3 is Script {
         (result.signedMathHelpers, result.deployed[8]) =
             deployIfNeeded(getSalt(SIGNED_MATH_HELPERS), type(SignedMathHelpers).creationCode, SIGNED_MATH_HELPERS);
 
+        // Deploy UniswapV4SwapHelpers — wraps Universal Router so descry's
+        // V4 swap Action can ref-pipe amountIn / minAmountOut as uint256
+        // without the planner's sub-256 narrowing block. Constructor args
+        // (UR + Permit2) are immutables — different UR per chain means
+        // different bytecode per chain. CREATE3 proxy addresses are
+        // independent of init code so the deployed address is still
+        // stable across chains where UR is configured.
+        //
+        // Skipped on chains where getUniversalRouter() returns address(0)
+        // (testnets, custom forks without an UNIVERSAL_ROUTER env
+        // override). The output struct's `uniswapV4SwapHelpers` field
+        // stays zero on those chains and the registry generator skips
+        // writing a row for it.
+        address universalRouter = getUniversalRouter();
+        if (universalRouter == address(0)) {
+            console2.log("UniswapV4SwapHelpers: skipped (no Universal Router for chain", chainId, ")");
+        } else {
+            address permit2Addr = getPermit2();
+            console2.log("UniswapV4SwapHelpers constructor args:");
+            console2.log("  Universal Router:", universalRouter);
+            console2.log("  Permit2:         ", permit2Addr);
+            bytes memory v4SwapHelpersCode = abi.encodePacked(
+                type(UniswapV4SwapHelpers).creationCode,
+                abi.encode(IUniversalRouter(universalRouter), IPermit2(permit2Addr))
+            );
+            (result.uniswapV4SwapHelpers, result.deployed[9]) =
+                deployIfNeeded(getSalt(UNISWAP_V4_SWAP_HELPERS), v4SwapHelpersCode, UNISWAP_V4_SWAP_HELPERS);
+        }
+
         // If the broadcasting account is also the Router owner, wire the pending executor in the
         // same broadcast. The owner multisig must still submit a follow-up `acceptExecutor()` tx
         // to activate the executor -- two-step transfer per FR-10.
@@ -277,11 +357,11 @@ contract DeployCreate3 is Script {
         console2.log("Router:        ", result.router);
         console2.log("ExecutionProxy:", result.executionProxy);
         uint256 newlyDeployed = 0;
-        for (uint256 i = 0; i < 9; i++) {
+        for (uint256 i = 0; i < 10; i++) {
             if (result.deployed[i]) newlyDeployed++;
         }
         console2.log("Newly deployed:", newlyDeployed);
-        console2.log("Already deployed:", 9 - newlyDeployed);
+        console2.log("Already deployed:", 10 - newlyDeployed);
         console2.log("Router owner:", routerOwner);
         console2.log("");
         console2.log("[REMINDER] acceptExecutor() must be invoked by the Router owner multisig");
@@ -336,6 +416,21 @@ contract DeployCreate3 is Script {
         address signedMathHelpers = predictAddress(deployer, SIGNED_MATH_HELPERS);
         console2.log(
             "SignedMathHelpers:", signedMathHelpers, isDeployed(signedMathHelpers) ? "(deployed)" : "(not deployed)"
+        );
+
+        // UniswapV4SwapHelpers: same CREATE3 address per chain (CREATE3
+        // proxy address is independent of the contract's bytecode), but
+        // the bytecode itself differs because Universal Router is an
+        // immutable that varies per chain. Address prediction works even
+        // for chains that won't actually deploy the helper (testnets);
+        // we log whether code is present at the predicted address.
+        address uniswapV4SwapHelpers = predictAddress(deployer, UNISWAP_V4_SWAP_HELPERS);
+        address ur = getUniversalRouter();
+        string memory urLabel = ur == address(0) ? " (no Universal Router for chain - deploy will skip)" : "";
+        console2.log(
+            string.concat("UniswapV4SwapHelpers:", urLabel),
+            uniswapV4SwapHelpers,
+            isDeployed(uniswapV4SwapHelpers) ? "(deployed)" : "(not deployed)"
         );
     }
 }
