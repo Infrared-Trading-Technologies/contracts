@@ -4,6 +4,77 @@
   "deployedAt": "2026-05-26T12:59:12Z",
   "deployer": "0xD1c4f07c277Bcc155693E3a569A9587E9237bA07",
   "owner": "0xb0217656A8160fa6D601c95844a73173237DEcFE",
-  "contracts": {"ExecutionProxy":{"address":"0x1868f62A7001de25947741a886720EacF62655AB","salt":"0xe5695b3064e7fc6a22129e383dc584c25654a8213cec45c672e2044f856bdfd7","verified":false,"txHash":"0x5a8ee467595b024ea05f1143b24ba47725847f47704c6ff3bf352e230c758abb","blockNumber":25131702},"Router":{"address":"0xED79938d83089D610C3d38DAe52B771A11614B41","salt":"0xcf23702408e9d272c8da1a9a59547690dfcecf0c8c6e6067014598d60ccd5a42","verified":false,"txHash":"0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12","blockNumber":25024627},"Tupler":{"address":"0x1AbbF67fBf2b8Fbc04B833A3Db4526FFda55b8e2","salt":"0x44c13c2358951792cfdc0d558a58e0a0500a8c5a5d2902ffbf2c36047b727a3b","verified":false,"txHash":"0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12","blockNumber":25024627},"Integer":{"address":"0x2CB4EEB698b771048405a046fd7fBC34133F2C40","salt":"0x9f6b8bccec85325cbb3705e9cceab8e9c2d0952878cb98893a8abd02471a1f04","verified":false,"txHash":"0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12","blockNumber":25024627},"Bytes32":{"address":"0x6F87EdC08983E4FD3810953bA5a2d56DCe9775c3","salt":"0xf04e6af6d5fc0a511d651246d2ada742f1b6f46573186046393880ac2d7a0836","verified":false,"txHash":"0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12","blockNumber":25024627},"BlockchainInfo":{"address":"0x2F4abb94d70F94bC44d90A806Be4AC8640000869","salt":"0xaf54df03108daf7917c135b4db85ef912acf4e15ec2666d9e4793464ea9f4d0a","verified":false,"txHash":"0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12","blockNumber":25024627},"ArraysConverter":{"address":"0x0Ba8D8de6412232FE41AAcb98d4e1FCcfbF0b47f","salt":"0x110727a197cc76e5abd1eab0d6173fe2ffec4dbb21c580b8ec4c1b0a5dcf9a35","verified":false,"txHash":"0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12","blockNumber":25024627},"MathHelpers":{"address":"0x569716eB86fdF1179ee2AFC9FaEf4e56bA01658a","salt":"0x09c7f66e5a50537c982df2f6c13bf4d91737e813aaf1aa80b053da745d2774b2","verified":false,"txHash":"0x07ada6918eebc64493ce3dc2e4f7755c41672cee65eec644b38071bf1048b656","blockNumber":25153102},"SignedMathHelpers":{"address":"0xd376936Bf1E1bb691846f2A7D3244dd95e62Fb35","salt":"0x0355273358dcad0b3492303581eaefe2cb023fbe2d92141d6d16043033022928","verified":false,"txHash":"0x47f950aaafa554cbbfca59f709019cc7161871d3bdfd44ceefdebcf0e8b52fb0","blockNumber":25153101},"UniswapV4SwapHelpers":{"address":"0x9b94B1a69a44EE82518B4951b3E31C257b4cD253","salt":"0x8d0df3b63887f6ced91ea20b050e4787920bc9c8912c4f55b18021b65e31aac0","verified":false,"txHash":"0x62d4c499194b657075864c103b21f3863ee9ccf90fd1dccedda2d385e7280ad5","blockNumber":25179646}},
+  "contracts": {
+    "ExecutionProxy": {
+      "address": "0x1868f62A7001de25947741a886720EacF62655AB",
+      "salt": "0xe5695b3064e7fc6a22129e383dc584c25654a8213cec45c672e2044f856bdfd7",
+      "verified": true,
+      "txHash": "0x5a8ee467595b024ea05f1143b24ba47725847f47704c6ff3bf352e230c758abb",
+      "blockNumber": 25131702
+    },
+    "Router": {
+      "address": "0xED79938d83089D610C3d38DAe52B771A11614B41",
+      "salt": "0xcf23702408e9d272c8da1a9a59547690dfcecf0c8c6e6067014598d60ccd5a42",
+      "verified": true,
+      "txHash": "0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12",
+      "blockNumber": 25024627
+    },
+    "Tupler": {
+      "address": "0x1AbbF67fBf2b8Fbc04B833A3Db4526FFda55b8e2",
+      "salt": "0x44c13c2358951792cfdc0d558a58e0a0500a8c5a5d2902ffbf2c36047b727a3b",
+      "verified": true,
+      "txHash": "0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12",
+      "blockNumber": 25024627
+    },
+    "Integer": {
+      "address": "0x2CB4EEB698b771048405a046fd7fBC34133F2C40",
+      "salt": "0x9f6b8bccec85325cbb3705e9cceab8e9c2d0952878cb98893a8abd02471a1f04",
+      "verified": true,
+      "txHash": "0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12",
+      "blockNumber": 25024627
+    },
+    "Bytes32": {
+      "address": "0x6F87EdC08983E4FD3810953bA5a2d56DCe9775c3",
+      "salt": "0xf04e6af6d5fc0a511d651246d2ada742f1b6f46573186046393880ac2d7a0836",
+      "verified": true,
+      "txHash": "0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12",
+      "blockNumber": 25024627
+    },
+    "BlockchainInfo": {
+      "address": "0x2F4abb94d70F94bC44d90A806Be4AC8640000869",
+      "salt": "0xaf54df03108daf7917c135b4db85ef912acf4e15ec2666d9e4793464ea9f4d0a",
+      "verified": true,
+      "txHash": "0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12",
+      "blockNumber": 25024627
+    },
+    "ArraysConverter": {
+      "address": "0x0Ba8D8de6412232FE41AAcb98d4e1FCcfbF0b47f",
+      "salt": "0x110727a197cc76e5abd1eab0d6173fe2ffec4dbb21c580b8ec4c1b0a5dcf9a35",
+      "verified": true,
+      "txHash": "0x43b341390102e0a463e2d71f5cf64838268a70eecee7fc954a3bac152e79dd12",
+      "blockNumber": 25024627
+    },
+    "MathHelpers": {
+      "address": "0x569716eB86fdF1179ee2AFC9FaEf4e56bA01658a",
+      "salt": "0x09c7f66e5a50537c982df2f6c13bf4d91737e813aaf1aa80b053da745d2774b2",
+      "verified": true,
+      "txHash": "0x07ada6918eebc64493ce3dc2e4f7755c41672cee65eec644b38071bf1048b656",
+      "blockNumber": 25153102
+    },
+    "SignedMathHelpers": {
+      "address": "0xd376936Bf1E1bb691846f2A7D3244dd95e62Fb35",
+      "salt": "0x0355273358dcad0b3492303581eaefe2cb023fbe2d92141d6d16043033022928",
+      "verified": true,
+      "txHash": "0x47f950aaafa554cbbfca59f709019cc7161871d3bdfd44ceefdebcf0e8b52fb0",
+      "blockNumber": 25153101
+    },
+    "UniswapV4SwapHelpers": {
+      "address": "0x9b94B1a69a44EE82518B4951b3E31C257b4cD253",
+      "salt": "0x8d0df3b63887f6ced91ea20b050e4787920bc9c8912c4f55b18021b65e31aac0",
+      "verified": true,
+      "txHash": "0x62d4c499194b657075864c103b21f3863ee9ccf90fd1dccedda2d385e7280ad5",
+      "blockNumber": 25179646
+    }
+  },
   "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
 }
