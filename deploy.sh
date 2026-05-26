@@ -566,18 +566,26 @@ verify() {
 
         echo "Verifying $contract at $addr..."
 
+        # Build per-contract `forge verify-contract` args. Router and
+        # UniswapV4SwapHelpers carry constructor immutables that need
+        # ABI-encoding; ExecutionProxy and the stateless helpers do
+        # not. Run the same `forge verify-contract … --watch` invocation
+        # in every branch — exit 0 means Etherscan accepted (newly
+        # verified OR already verified, both fine), non-zero means a
+        # real failure (constructor args mismatch, no code at address,
+        # network drop).
+        local verify_ok=0
         if [[ "$contract" == "Router" ]]; then
-            # Router has constructor args: (address owner, address liquidator)
+            # Router constructor: (address owner, address liquidator)
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
                 --etherscan-api-key "$api_key" \
                 --constructor-args "$(cast abi-encode 'constructor(address,address)' "$router_owner" "$router_liquidator")" \
-                --watch || echo -e "${YELLOW}$contract verification may have failed or already verified${NC}"
+                --watch && verify_ok=1
         elif [[ "$contract" == "UniswapV4SwapHelpers" ]]; then
-            # UniswapV4SwapHelpers has constructor args:
-            # (IUniversalRouter universalRouter, IPermit2 permit2).
-            # Both encoded as plain `address` for ABI purposes.
+            # UniswapV4SwapHelpers constructor:
+            # (IUniversalRouter universalRouter, IPermit2 permit2)
             if [[ -z "$universal_router" ]]; then
                 echo -e "${YELLOW}Skipping $contract verification: no Universal Router address known for chain $chain_id${NC}"
                 continue
@@ -587,14 +595,34 @@ verify() {
                 --verifier-url "$api_url" \
                 --etherscan-api-key "$api_key" \
                 --constructor-args "$(cast abi-encode 'constructor(address,address)' "$universal_router" "$permit2_addr")" \
-                --watch || echo -e "${YELLOW}$contract verification may have failed or already verified${NC}"
+                --watch && verify_ok=1
         else
-            # ExecutionProxy (stateless post-refactor) and all Weiroll helpers have no constructor args.
+            # ExecutionProxy (stateless post-refactor) + Weiroll helpers
+            # have no constructor args.
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
                 --etherscan-api-key "$api_key" \
-                --watch || echo -e "${YELLOW}$contract verification may have failed or already verified${NC}"
+                --watch && verify_ok=1
+        fi
+
+        if [[ $verify_ok -eq 1 ]]; then
+            # Etherscan accepted the source — flip the local
+            # bookkeeping flag so deployments/<chain>.json matches
+            # on-chain truth. Without this update the field stays
+            # stuck at the deploy-time `false` even though Etherscan
+            # reports the contract as verified.
+            local tmp
+            tmp=$(mktemp)
+            if jq --arg c "$contract" '.contracts[$c].verified = true' "$registry_file" > "$tmp"; then
+                mv "$tmp" "$registry_file"
+                echo -e "${GREEN}  -> set .contracts.$contract.verified = true in $registry_file${NC}"
+            else
+                rm -f "$tmp"
+                echo -e "${YELLOW}  -> failed to update $registry_file for $contract (verification on Etherscan still landed)${NC}"
+            fi
+        else
+            echo -e "${YELLOW}$contract verification failed (or transient verifier error) — registry .verified flag unchanged${NC}"
         fi
     done < <(get_contracts)
 
