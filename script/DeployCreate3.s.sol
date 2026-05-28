@@ -64,6 +64,12 @@ contract DeployCreate3 is Script {
     // accompanies FLAG_DATA dispatcher support (spec 00001).
     string public constant EXECUTION_PROXY_SALT_NAMESPACE = "infrared.contracts.executionproxy.v3";
 
+    // UniswapV4SwapHelpers bytecode changes when its embedded V4 struct layout
+    // must follow Uniswap v4-periphery / Universal Router upgrades. Pinned to
+    // its own namespace so a redeploy lands at a fresh CREATE3 address while
+    // all other Router-stack contracts keep their addresses.
+    string public constant UNISWAP_V4_SWAP_HELPERS_SALT_NAMESPACE = "infrared.contracts.uniswapv4swaphelpers.v2";
+
     // CREATE3 proxy bytecode hash (from solmate/ZeframLou CREATE3). Used to predict the deployed
     // address locally when no RPC is available (e.g. CI-less preview).
     bytes32 internal constant CREATE3_PROXY_BYTECODE_HASH = keccak256(hex"67363d3d37363d34f03d5260086018f3");
@@ -177,6 +183,14 @@ contract DeployCreate3 is Script {
     ///      during the Weiroll VM remediation and must land at a fresh address.
     function getExecutionProxySalt() public pure returns (bytes32) {
         return keccak256(bytes(EXECUTION_PROXY_SALT_NAMESPACE));
+    }
+
+    /// @notice Pinned CREATE3 salt for UniswapV4SwapHelpers.
+    /// @dev Independent of `SALT_VERSION` so a struct-shape upgrade lands at
+    ///      a fresh CREATE3 address without forcing every other contract
+    ///      in the stack onto a new address too.
+    function getUniswapV4SwapHelpersSalt() public pure returns (bytes32) {
+        return keccak256(bytes(UNISWAP_V4_SWAP_HELPERS_SALT_NAMESPACE));
     }
 
     /// @notice Predicts the deployment address for a contract
@@ -333,7 +347,7 @@ contract DeployCreate3 is Script {
                 abi.encode(IUniversalRouter(universalRouter), IPermit2(permit2Addr))
             );
             (result.uniswapV4SwapHelpers, result.deployed[9]) =
-                deployIfNeeded(getSalt(UNISWAP_V4_SWAP_HELPERS), v4SwapHelpersCode, UNISWAP_V4_SWAP_HELPERS);
+                deployIfNeeded(getUniswapV4SwapHelpersSalt(), v4SwapHelpersCode, UNISWAP_V4_SWAP_HELPERS);
         }
 
         // If the broadcasting account is also the Router owner, wire the pending executor in the
@@ -424,7 +438,7 @@ contract DeployCreate3 is Script {
         // immutable that varies per chain. Address prediction works even
         // for chains that won't actually deploy the helper (testnets);
         // we log whether code is present at the predicted address.
-        address uniswapV4SwapHelpers = predictAddress(deployer, UNISWAP_V4_SWAP_HELPERS);
+        address uniswapV4SwapHelpers = _predictForSalt(deployer, getUniswapV4SwapHelpersSalt());
         address ur = getUniversalRouter();
         string memory urLabel = ur == address(0) ? " (no Universal Router for chain - deploy will skip)" : "";
         console2.log(

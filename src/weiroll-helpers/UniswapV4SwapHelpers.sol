@@ -29,6 +29,10 @@ interface IUniversalRouter {
  *      abi.decode(bytes, ExactInputSingleParams), so the struct shape and
  *      field ordering here must match periphery byte-for-byte.
  *
+ *      `minHopPriceX36` (Q36 fixed-point per-hop price floor) sits between
+ *      `amountOutMinimum` and `hookData`. Zero disables the per-hop
+ *      sandwich-resistance check.
+ *
  *      In V4, `Currency` is `type Currency is address` — a type alias for
  *      address with zero-address sentinel = native ETH. This contract
  *      uses plain `address` throughout; the on-chain ABI encoding is
@@ -47,6 +51,7 @@ struct ExactInputSingleParams {
     bool zeroForOne;
     uint128 amountIn;
     uint128 amountOutMinimum;
+    uint256 minHopPriceX36;
     bytes hookData;
 }
 
@@ -92,7 +97,7 @@ contract UniswapV4SwapHelpers {
     /// @dev Bumps when the contract's external surface changes. Mirror
     ///      of MathHelpers.VERSION — gives operators a one-call way to
     ///      assert they're talking to the expected revision.
-    uint256 public constant VERSION = 1;
+    uint256 public constant VERSION = 2;
 
     /// @dev Universal Router command byte for a V4 swap (per Uniswap
     ///      Commands library).
@@ -203,6 +208,7 @@ contract UniswapV4SwapHelpers {
                 zeroForOne: zeroForOne,
                 amountIn: amountIn128,
                 amountOutMinimum: minAmountOut128,
+                minHopPriceX36: 0,
                 hookData: hookData
             })
         );

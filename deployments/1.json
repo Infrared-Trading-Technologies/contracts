@@ -1,7 +1,7 @@
 {
   "chainId": 1,
   "chainName": "Ethereum Mainnet",
-  "deployedAt": "2026-05-26T12:59:12Z",
+  "deployedAt": "2026-05-28T18:13:26Z",
   "deployer": "0xD1c4f07c277Bcc155693E3a569A9587E9237bA07",
   "owner": "0xb0217656A8160fa6D601c95844a73173237DEcFE",
   "contracts": {
@@ -69,11 +69,11 @@
       "blockNumber": 25153101
     },
     "UniswapV4SwapHelpers": {
-      "address": "0x9b94B1a69a44EE82518B4951b3E31C257b4cD253",
-      "salt": "0x8d0df3b63887f6ced91ea20b050e4787920bc9c8912c4f55b18021b65e31aac0",
+      "address": "0xAd1630F1C8eB7e7d0875FBB13e1dec4497E0D591",
+      "salt": "0xb511bc53e1cd9fb73bea3fb9cffd645870bcc6ac3d69728423180fe5d25b7000",
       "verified": true,
-      "txHash": "0x62d4c499194b657075864c103b21f3863ee9ccf90fd1dccedda2d385e7280ad5",
-      "blockNumber": 25179646
+      "txHash": "0xf9c37a80740ed7bed0d8342ab5583c84c118522293a8d49c82cb38d1a5f6f81b",
+      "blockNumber": 25195565
     }
   },
   "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"

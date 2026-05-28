@@ -1,7 +1,7 @@
 {
   "chainId": 8453,
   "chainName": "Base",
-  "deployedAt": "2026-05-26T12:59:15Z",
+  "deployedAt": "2026-05-28T18:14:04Z",
   "deployer": "0xD1c4f07c277Bcc155693E3a569A9587E9237bA07",
   "owner": "0xb0217656A8160fa6D601c95844a73173237DEcFE",
   "contracts": {
@@ -69,11 +69,11 @@
       "blockNumber": 46345664
     },
     "UniswapV4SwapHelpers": {
-      "address": "0x9b94B1a69a44EE82518B4951b3E31C257b4cD253",
-      "salt": "0x8d0df3b63887f6ced91ea20b050e4787920bc9c8912c4f55b18021b65e31aac0",
+      "address": "0xAd1630F1C8eB7e7d0875FBB13e1dec4497E0D591",
+      "salt": "0xb511bc53e1cd9fb73bea3fb9cffd645870bcc6ac3d69728423180fe5d25b7000",
       "verified": true,
-      "txHash": "0x6bf63b089411f32da06297ebf99ece405d68ed168c22920c99b5a140da0bb12d",
-      "blockNumber": 46505504
+      "txHash": "0xeaa32306512f84a5bff683ab9a6cc4ea0a91bc9ea2acc044903c8faedfbe7744",
+      "blockNumber": 46601349
     }
   },
   "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
