@@ -153,6 +153,7 @@ contract DeployCreate3 is Script {
         uint256 cid = block.chainid;
         if (cid == 1) return 0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA; // Ethereum mainnet
         if (cid == 8453) return 0xFdf682F51FE81Aa4898F0AE2163d8A55c127fbC7; // Base
+        if (cid == 42161) return 0x8B844f885672f333Bc0042cB669255f93a4C1E6b; // Arbitrum One
         return address(0);
     }
 

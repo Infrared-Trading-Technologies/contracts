@@ -64,6 +64,7 @@ usage() {
     echo "  preview <chain-id>     Preview deployment addresses without deploying"
     echo "  verify <chain-id>      Verify deployed contracts on block explorer"
     echo "  wire-bundle <chain-id> Write Safe Tx Builder JSON for Router.executor wiring"
+    echo "  wire-propose <chain-id> Propose the wiring batch to the Safe Transaction Service"
     echo "  list-chains            List supported chains"
     echo ""
     echo "Environment Variables (auto-loaded from .env):"
@@ -74,6 +75,10 @@ usage() {
     echo "  <CHAIN>_RPC_URL      RPC URL for the target chain (e.g., ETH_RPC_URL, BASE_RPC_URL)"
     echo "  ETHERSCAN_API_KEY    Etherscan V2 API key (works across all supported chains)"
     echo "  SALT_VERSION         Salt version for CREATE3 addresses (default: v1)"
+    echo "  SAFE_PROPOSER_ADDRESS  Safe owner address that signs wire-propose proposals"
+    echo "  SAFE_PROPOSER_ACCOUNT  Foundry keystore name for the proposer key"
+    echo "  SAFE_PROPOSER_LEDGER   Set to 1 to sign wire-propose with a Ledger"
+    echo "  SAFE_API_KEY           Optional Safe API key (raises rate limits)"
     exit 1
 }
 
@@ -230,8 +235,16 @@ generate_registry() {
         # check is what lets conditionally-deployed contracts (today:
         # UniswapV4SwapHelpers on chains with no Universal Router config)
         # stay out of the per-chain registry without special-casing.
-        local code_at_addr
-        code_at_addr=$(cast code "$predicted_addr" --rpc-url "$rpc_url" 2>/dev/null || echo "0x")
+        # Probe with retries: a transient RPC error must not silently drop a
+        # deployed contract from the registry (bit us on Arbitrum, where
+        # UniswapV4SwapHelpers was live but a single failed probe skipped it).
+        local code_at_addr="0x"
+        local probe_attempt
+        for probe_attempt in 1 2 3; do
+            code_at_addr=$(cast code "$predicted_addr" --rpc-url "$rpc_url" 2>/dev/null || echo "0x")
+            [[ "$code_at_addr" != "0x" && -n "$code_at_addr" ]] && break
+            [[ "$probe_attempt" -lt 3 ]] && sleep 2
+        done
         if [[ "$code_at_addr" == "0x" || -z "$code_at_addr" ]]; then
             echo -e "${YELLOW}Skipping $contract: no code at $predicted_addr on chain $chain_id${NC}"
             continue
@@ -375,6 +388,14 @@ deploy() {
     if [[ -n "${SAFE_ADDRESS:-}" ]]; then
         echo ""
         wire_bundle "$chain_id"
+        # With a proposer configured, also push the batch straight into the
+        # owners' Safe app queue. Non-fatal: the Tx Builder bundle above is
+        # the fallback and the broadcast already succeeded.
+        if [[ -n "${SAFE_PROPOSER_ADDRESS:-}" ]]; then
+            echo ""
+            wire_propose "$chain_id" \
+                || echo -e "${YELLOW}wire-propose failed; import the Tx Builder bundle instead or rerun '$0 wire-propose $chain_id'${NC}"
+        fi
     fi
 
     echo ""
@@ -547,6 +568,7 @@ verify() {
     case "$chain_id" in
         1) universal_router="0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA" ;;
         8453) universal_router="0xFdf682F51FE81Aa4898F0AE2163d8A55c127fbC7" ;;
+        42161) universal_router="0x8B844f885672f333Bc0042cB669255f93a4C1E6b" ;;
     esac
     local permit2_addr="0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
@@ -718,6 +740,206 @@ EOF
     echo "  app.safe.global -> Apps -> Transaction Builder -> 'Load' (upload JSON)"
 }
 
+# Canonical Safe MultiSendCallOnly v1.4.1 (matches the Safe 1.4.1 singleton our
+# multisig runs). Batches setPendingExecutor + acceptExecutor into one Safe tx
+# via DELEGATECALL so signers approve a single transaction. On the Safe tx
+# service's trusted-delegatecall list, so the UI won't flag the proposal.
+MULTISEND_CALL_ONLY="0x9641d764fc13c8B624c04430C7356C1C7C8102e2"
+
+# Propose the Router.executor wiring batch directly to the Safe Transaction
+# Service so it lands in every owner's Safe app queue -- no manual Tx Builder
+# JSON import. Signing threshold still applies; this only automates proposal.
+#
+# Required env:
+#   SAFE_ADDRESS            the Safe (Router owner)
+#   SAFE_PROPOSER_ADDRESS   Safe owner address the proposal is signed with
+#   SAFE_PROPOSER_ACCOUNT   Foundry keystore name holding that key, OR
+#   SAFE_PROPOSER_LEDGER=1  sign with a Ledger instead (eth_sign flow)
+# Optional:
+#   SAFE_API_KEY            Safe API key (unauthenticated: 2 RPS / 5k per month)
+#   SAFE_PROPOSE_DRY=1      build + print the proposal, skip signing and POST
+wire_propose() {
+    local chain_id="$1"
+
+    local chain_name
+    chain_name=$(get_chain_config "$chain_id" "name")
+    if [[ -z "$chain_name" ]]; then
+        echo -e "${RED}Error: Chain ID $chain_id not found in chains.json${NC}"
+        return 1
+    fi
+
+    local short_name
+    short_name=$(get_chain_config "$chain_id" "safeShortName")
+    if [[ -z "$short_name" ]]; then
+        echo -e "${RED}Error: no safeShortName for chain $chain_id in chains.json${NC}"
+        return 1
+    fi
+    local svc="https://api.safe.global/tx-service/$short_name/api"
+
+    local registry_file="$DEPLOYMENTS_DIR/$chain_id.json"
+    if [[ ! -f "$registry_file" ]]; then
+        echo -e "${RED}Error: $registry_file not found. Run '$0 deploy $chain_id' first.${NC}"
+        return 1
+    fi
+
+    local safe_addr="${SAFE_ADDRESS:-}"
+    if [[ -z "$safe_addr" ]]; then
+        echo -e "${RED}Error: SAFE_ADDRESS not set${NC}"
+        return 1
+    fi
+    local proposer="${SAFE_PROPOSER_ADDRESS:-}"
+    if [[ -z "$proposer" && -z "${SAFE_PROPOSE_DRY:-}" ]]; then
+        echo -e "${RED}Error: SAFE_PROPOSER_ADDRESS not set (must be a Safe owner)${NC}"
+        return 1
+    fi
+
+    local rpc_env rpc_url
+    rpc_env=$(get_chain_config "$chain_id" "rpcEnv")
+    check_env "$rpc_env"
+    rpc_url="${!rpc_env}"
+
+    local router_addr executor_addr
+    router_addr=$(jq -r '.contracts.Router.address // empty' "$registry_file")
+    executor_addr=$(jq -r '.contracts.ExecutionProxy.address // empty' "$registry_file")
+    if [[ -z "$router_addr" || -z "$executor_addr" ]]; then
+        echo -e "${RED}Error: Router or ExecutionProxy address missing in $registry_file${NC}"
+        return 1
+    fi
+
+    # Idempotence: nothing to propose when the executor is already wired.
+    local current_executor
+    current_executor=$(cast call "$router_addr" "executor()(address)" --rpc-url "$rpc_url" 2>/dev/null || echo "")
+    if [[ "${current_executor,,}" == "${executor_addr,,}" ]]; then
+        echo -e "${GREEN}Router.executor already set to $executor_addr on chain $chain_id -- nothing to propose${NC}"
+        return 0
+    fi
+
+    # MultiSendCallOnly must exist on the target chain (canonical deploy).
+    local ms_code
+    ms_code=$(cast code "$MULTISEND_CALL_ONLY" --rpc-url "$rpc_url" 2>/dev/null || echo "0x")
+    if [[ "$ms_code" == "0x" || -z "$ms_code" ]]; then
+        echo -e "${RED}Error: MultiSendCallOnly not found at $MULTISEND_CALL_ONLY on chain $chain_id${NC}"
+        return 1
+    fi
+
+    # Inner calls, then the packed MultiSend encoding:
+    # each tx = operation(uint8=0 CALL) ++ to(20) ++ value(uint256=0) ++ dataLen(uint256) ++ data
+    local set_pending_data accept_data
+    set_pending_data=$(cast calldata "setPendingExecutor(address)" "$executor_addr") || return 1
+    accept_data=$(cast calldata "acceptExecutor()") || return 1
+
+    local tx1 tx2 ms_inner ms_data
+    tx1=$(cast abi-encode --packed "f(uint8,address,uint256,uint256,bytes)" \
+        0 "$router_addr" 0 $(( (${#set_pending_data} - 2) / 2 )) "$set_pending_data") || return 1
+    tx2=$(cast abi-encode --packed "f(uint8,address,uint256,uint256,bytes)" \
+        0 "$router_addr" 0 $(( (${#accept_data} - 2) / 2 )) "$accept_data") || return 1
+    ms_inner=$(cast concat-hex "$tx1" "$tx2") || return 1
+    ms_data=$(cast calldata "multiSend(bytes)" "$ms_inner") || return 1
+
+    # Next nonce = max(on-chain nonce, highest queued nonce + 1) so we never
+    # collide with an already-proposed tx waiting on signatures.
+    local chain_nonce queued_nonce nonce queue_count
+    chain_nonce=$(cast call "$safe_addr" "nonce()(uint256)" --rpc-url "$rpc_url") || return 1
+    local auth_args=()
+    if [[ -n "${SAFE_API_KEY:-}" ]]; then
+        auth_args=(-H "Authorization: Bearer $SAFE_API_KEY")
+    fi
+    local queue_json
+    queue_json=$(curl -sf "${auth_args[@]}" \
+        "$svc/v1/safes/$safe_addr/multisig-transactions/?executed=false&limit=1&ordering=-nonce" || echo "{}")
+    queued_nonce=$(printf '%s' "$queue_json" | jq -r '.results[0].nonce // empty')
+    queue_count=$(printf '%s' "$queue_json" | jq -r '.count // 0')
+    nonce="$chain_nonce"
+    if [[ -n "$queued_nonce" && "$queued_nonce" -ge "$chain_nonce" ]]; then
+        nonce=$((queued_nonce + 1))
+        echo -e "${YELLOW}Safe queue has $queue_count pending tx(s); proposing at nonce $nonce.${NC}"
+        echo -e "${YELLOW}Check the queue for an existing wiring proposal before signing.${NC}"
+    fi
+
+    # Ask the Safe itself for the EIP-712 tx hash -- version-proof vs local math.
+    local safe_tx_hash
+    safe_tx_hash=$(cast call "$safe_addr" \
+        "getTransactionHash(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,uint256)(bytes32)" \
+        "$MULTISEND_CALL_ONLY" 0 "$ms_data" 1 0 0 0 \
+        0x0000000000000000000000000000000000000000 \
+        0x0000000000000000000000000000000000000000 \
+        "$nonce" --rpc-url "$rpc_url") || return 1
+
+    echo "Safe:            $safe_addr ($short_name)"
+    echo "Router:          $router_addr"
+    echo "ExecutionProxy:  $executor_addr"
+    echo "MultiSend batch: setPendingExecutor + acceptExecutor (1 signature per signer)"
+    echo "Nonce:           $nonce"
+    echo "SafeTxHash:      $safe_tx_hash"
+
+    if [[ -n "${SAFE_PROPOSE_DRY:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}Dry mode: skipping signature + POST. Payload:${NC}"
+        jq -n --arg safe "$safe_addr" --arg to "$MULTISEND_CALL_ONLY" --arg data "$ms_data" \
+            --arg hash "$safe_tx_hash" --argjson nonce "$nonce" \
+            '{safe: $safe, to: $to, value: "0", data: $data, operation: 1,
+              gasToken: "0x0000000000000000000000000000000000000000",
+              safeTxGas: "0", baseGas: "0", gasPrice: "0",
+              refundReceiver: "0x0000000000000000000000000000000000000000",
+              nonce: $nonce, contractTransactionHash: $hash}'
+        return 0
+    fi
+
+    # Warn (not fail) when the proposer is not an owner -- registered service
+    # delegates are also allowed to propose.
+    local is_owner
+    is_owner=$(cast call "$safe_addr" "isOwner(address)(bool)" "$proposer" --rpc-url "$rpc_url" 2>/dev/null || echo "false")
+    if [[ "$is_owner" != "true" ]]; then
+        echo -e "${YELLOW}Warning: $proposer is not a Safe owner; proposal will be rejected unless it is a registered delegate${NC}"
+    fi
+
+    # Sign the safeTxHash. Keystore path signs the raw EIP-712 digest (v 27/28).
+    # Ledger cannot sign raw digests, so it signs via eth_sign (EIP-191 prefix)
+    # and we bump v by 4 -- the Safe convention marking a prefixed signature.
+    local sig
+    if [[ -n "${SAFE_PROPOSER_LEDGER:-}" ]]; then
+        echo "Signing with Ledger (confirm on device)..."
+        sig=$(cast wallet sign --ledger "$safe_tx_hash") || return 1
+        local v=$((16#${sig:130:2} + 4))
+        sig="0x${sig:2:128}$(printf '%02x' "$v")"
+    elif [[ -n "${SAFE_PROPOSER_ACCOUNT:-}" ]]; then
+        echo "Signing with keystore '$SAFE_PROPOSER_ACCOUNT' (password prompt follows)..."
+        sig=$(cast wallet sign --no-hash --account "$SAFE_PROPOSER_ACCOUNT" "$safe_tx_hash") || return 1
+    else
+        echo -e "${RED}Error: set SAFE_PROPOSER_ACCOUNT (keystore) or SAFE_PROPOSER_LEDGER=1${NC}"
+        return 1
+    fi
+
+    local payload http_code response
+    payload=$(jq -n --arg safe "$safe_addr" --arg to "$MULTISEND_CALL_ONLY" --arg data "$ms_data" \
+        --arg hash "$safe_tx_hash" --arg sender "$proposer" --arg sig "$sig" --argjson nonce "$nonce" \
+        '{safe: $safe, to: $to, value: "0", data: $data, operation: 1,
+          gasToken: "0x0000000000000000000000000000000000000000",
+          safeTxGas: "0", baseGas: "0", gasPrice: "0",
+          refundReceiver: "0x0000000000000000000000000000000000000000",
+          nonce: $nonce, contractTransactionHash: $hash,
+          sender: $sender, signature: $sig, origin: "infrared deploy.sh wire-propose"}')
+
+    response=$(curl -s -w '\n%{http_code}' "${auth_args[@]}" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "$svc/v1/safes/$safe_addr/multisig-transactions/")
+    http_code=$(printf '%s' "$response" | tail -1)
+
+    if [[ "$http_code" == "201" || "$http_code" == "200" ]]; then
+        echo ""
+        echo -e "${GREEN}Proposal submitted to the Safe Transaction Service${NC}"
+        echo "Signers can review + confirm in the queue:"
+        echo "  https://app.safe.global/transactions/queue?safe=$short_name:$safe_addr"
+        echo "After both wiring txs execute, confirm with:"
+        echo "  cast call $router_addr 'executor()(address)' --rpc-url \$${rpc_env}"
+    else
+        echo -e "${RED}Proposal failed (HTTP $http_code):${NC}"
+        printf '%s\n' "$response" | head -n -1
+        return 1
+    fi
+}
+
 # Main
 if [[ $# -lt 1 ]]; then
     usage
@@ -743,6 +965,10 @@ case "$1" in
     wire-bundle)
         [[ $# -lt 2 ]] && usage
         wire_bundle "$2"
+        ;;
+    wire-propose)
+        [[ $# -lt 2 ]] && usage
+        wire_propose "$2"
         ;;
     list-chains)
         list_chains
