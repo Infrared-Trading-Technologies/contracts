@@ -12,6 +12,7 @@
         "apiKeyEnv": "ETHERSCAN_API_KEY"
       },
       "rpcEnv": "ETH_RPC_URL",
+      "safeShortName": "eth",
       "isTestnet": false
     },
     "8453": {
@@ -24,6 +25,20 @@
         "apiKeyEnv": "ETHERSCAN_API_KEY"
       },
       "rpcEnv": "BASE_RPC_URL",
+      "safeShortName": "base",
+      "isTestnet": false
+    },
+    "42161": {
+      "name": "arbitrum",
+      "displayName": "Arbitrum One",
+      "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf",
+      "explorer": {
+        "url": "https://arbiscan.io",
+        "apiUrl": "https://api.etherscan.io/v2/api?chainid=42161",
+        "apiKeyEnv": "ETHERSCAN_API_KEY"
+      },
+      "rpcEnv": "ARBITRUM_RPC_URL",
+      "safeShortName": "arb1",
       "isTestnet": false
     },
     "11155111": {
@@ -36,6 +51,7 @@
         "apiKeyEnv": "ETHERSCAN_API_KEY"
       },
       "rpcEnv": "SEPOLIA_RPC_URL",
+      "safeShortName": "sep",
       "isTestnet": true
     },
     "84532": {
@@ -48,6 +64,7 @@
         "apiKeyEnv": "ETHERSCAN_API_KEY"
       },
       "rpcEnv": "BASE_SEPOLIA_RPC_URL",
+      "safeShortName": "basesep",
       "isTestnet": true
     }
   },
