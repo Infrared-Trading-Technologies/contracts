@@ -1,0 +1,80 @@
+{
+  "chainId": 42161,
+  "chainName": "Arbitrum One",
+  "deployedAt": "2026-07-17T17:03:51Z",
+  "deployer": "0xD1c4f07c277Bcc155693E3a569A9587E9237bA07",
+  "owner": "0xb0217656A8160fa6D601c95844a73173237DEcFE",
+  "contracts": {
+    "ExecutionProxy": {
+      "address": "0x1868f62A7001de25947741a886720EacF62655AB",
+      "salt": "0xe5695b3064e7fc6a22129e383dc584c25654a8213cec45c672e2044f856bdfd7",
+      "verified": true,
+      "txHash": "0x8d48a368834be3183ee7874c28a3a8c4ac38917bb12eb2b40ebd48f847f59eb9",
+      "blockNumber": 484867882
+    },
+    "Router": {
+      "address": "0xED79938d83089D610C3d38DAe52B771A11614B41",
+      "salt": "0xcf23702408e9d272c8da1a9a59547690dfcecf0c8c6e6067014598d60ccd5a42",
+      "verified": true,
+      "txHash": "0xf187eca11175f0458bbc695b3170e8e60378e8f5ee51f1fb7ddafa1aa4648fb0",
+      "blockNumber": 484867891
+    },
+    "Tupler": {
+      "address": "0x1AbbF67fBf2b8Fbc04B833A3Db4526FFda55b8e2",
+      "salt": "0x44c13c2358951792cfdc0d558a58e0a0500a8c5a5d2902ffbf2c36047b727a3b",
+      "verified": true,
+      "txHash": "0x1c5fa37c9bbdd8b0e0d128ea1d3aeca54165d99b71e7959c86a22786201ab3dc",
+      "blockNumber": 484867900
+    },
+    "Integer": {
+      "address": "0x2CB4EEB698b771048405a046fd7fBC34133F2C40",
+      "salt": "0x9f6b8bccec85325cbb3705e9cceab8e9c2d0952878cb98893a8abd02471a1f04",
+      "verified": true,
+      "txHash": "0x14987037d74f0126ac6d18b7a65ddafefb437301f7a9a6bfdbc4bb650a12a6bf",
+      "blockNumber": 484867906
+    },
+    "Bytes32": {
+      "address": "0x6F87EdC08983E4FD3810953bA5a2d56DCe9775c3",
+      "salt": "0xf04e6af6d5fc0a511d651246d2ada742f1b6f46573186046393880ac2d7a0836",
+      "verified": true,
+      "txHash": "0xee360963d44b169c35328a76c2c331e352627d35228e30025f4115050bcf656d",
+      "blockNumber": 484867913
+    },
+    "BlockchainInfo": {
+      "address": "0x2F4abb94d70F94bC44d90A806Be4AC8640000869",
+      "salt": "0xaf54df03108daf7917c135b4db85ef912acf4e15ec2666d9e4793464ea9f4d0a",
+      "verified": true,
+      "txHash": "0xd433b83cc42e987bba993c802777da26a74287e788c1e61eba312d995b2d9f21",
+      "blockNumber": 484867921
+    },
+    "ArraysConverter": {
+      "address": "0x0Ba8D8de6412232FE41AAcb98d4e1FCcfbF0b47f",
+      "salt": "0x110727a197cc76e5abd1eab0d6173fe2ffec4dbb21c580b8ec4c1b0a5dcf9a35",
+      "verified": true,
+      "txHash": "0x6fb33071e4e83f5402e46cf397cc9b99fee9dd6d0e48da7d27bad5625291cbbc",
+      "blockNumber": 484867928
+    },
+    "MathHelpers": {
+      "address": "0x569716eB86fdF1179ee2AFC9FaEf4e56bA01658a",
+      "salt": "0x09c7f66e5a50537c982df2f6c13bf4d91737e813aaf1aa80b053da745d2774b2",
+      "verified": true,
+      "txHash": "0x3b2b8a96d1a689f3427002a47ade53a97011d4a22ad91d25b9d3388bf3a200bf",
+      "blockNumber": 484867935
+    },
+    "SignedMathHelpers": {
+      "address": "0xd376936Bf1E1bb691846f2A7D3244dd95e62Fb35",
+      "salt": "0x0355273358dcad0b3492303581eaefe2cb023fbe2d92141d6d16043033022928",
+      "verified": true,
+      "txHash": "0x0e42a2ae83df4cd804dc4b1a31378d08ee9a2b2e2b98de032150142bcade65fc",
+      "blockNumber": 484867942
+    },
+    "UniswapV4SwapHelpers": {
+      "address": "0xAd1630F1C8eB7e7d0875FBB13e1dec4497E0D591",
+      "salt": "0xb511bc53e1cd9fb73bea3fb9cffd645870bcc6ac3d69728423180fe5d25b7000",
+      "verified": true,
+      "txHash": "0x8de77fc588cd3926f4ae4c7db855a2e2cc9bfb960be98e1bde97e4e483dbfece",
+      "blockNumber": 484867949
+    }
+  },
+  "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
+}
