@@ -68,7 +68,7 @@
       "isTestnet": true
     }
   },
-  "_contractsNote": "UniswapV4SwapHelpers is conditionally deployed: only on chains where DeployCreate3.getUniversalRouter() returns a non-zero address (mainnet + Base today, testnets currently skipped). deploy.sh's generate_registry probes on-chain code presence before writing the row, so chains that skipped deployment don't get a stale entry.",
+  "_contractsNote": "UniswapV4SwapHelpers is conditionally deployed: only on chains where DeployCreate3.getUniversalRouter() returns a non-zero address (mainnet, Base and Arbitrum One today, testnets currently skipped). deploy.sh's generate_registry probes on-chain code presence before writing the row, so chains that skipped deployment don't get a stale entry.",
   "contracts": [
     "ExecutionProxy",
     "Router",

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Infrared Contracts -- Solidity contracts for the Infrared execution layer. The core `ExecutionProxy` contract executes Weiroll VM programs atomically with slippage verification. Includes helper contracts (`Tupler`, `Integer`, `Bytes32`, `BlockchainInfo`, `ArraysConverter`) that provide Weiroll-compatible utilities.
+Infrared Contracts -- Solidity contracts for the Infrared execution layer. `Router` is the user-facing contract: it holds approvals and native ETH, applies fees and slippage, and delegates Weiroll execution to `ExecutionProxy`. Includes helper contracts (`Tupler`, `Integer`, `Bytes32`, `BlockchainInfo`, `ArraysConverter`, `MathHelpers`, `SignedMathHelpers`, `UniswapV4SwapHelpers`) that provide Weiroll-compatible utilities.
 
 License: BUSL-1.1
 
@@ -35,7 +35,11 @@ Uses CREATE3 for deterministic cross-chain addresses. Factory: `0x9fBB3DF7C40Da2
 
 Signs with a Foundry-encrypted keystore (`~/.foundry/keystores/<name>`). Create one via `./setup-deployer-wallet.sh <name>`. Config via `.env` (see `.env.example`). Key env vars: `KEYSTORE_ACCOUNT`, `DEPLOYER_ADDRESS`, `SAFE_ADDRESS`, `ROUTER_LIQUIDATOR`, `<CHAIN>_RPC_URL`.
 
-Supported chains: Ethereum (1), Base (8453), Sepolia (11155111), Base Sepolia (84532).
+Supported chains: Ethereum (1), Base (8453), Arbitrum One (42161), Sepolia (11155111), Base Sepolia (84532).
+
+After deploying a new chain, the Router owner multisig must wire the executor (`setPendingExecutor` + `acceptExecutor`). `./deploy.sh wire-propose <chain-id>` proposes that batch straight to the Safe Transaction Service; `./deploy.sh wire-bundle <chain-id>` writes a Safe Tx Builder JSON to import by hand instead. The chain is not live until `router.executor()` returns the ExecutionProxy address.
+
+Both repos must agree on deployed addresses: after a deploy, populate the chain in `infrared/internal/protocol/infrared/addresses.go` (`chainAddressMap`), or `IsChainSupported` treats it as unsupported.
 
 ## Architecture
 
@@ -45,11 +49,10 @@ Supported chains: Ethereum (1), Base (8453), Sepolia (11155111), Base Sepolia (8
 
 ### Core Contract
 
-`src/ExecutionProxy.sol` inherits from Weiroll `VM`, OpenZeppelin `ReentrancyGuard` + `Ownable`, uses `SafeERC20`. Two entry points:
-- `execute()` -- multi-output with array of `OutputSpec` structs
-- `executeSingle()` -- gas-optimized single-output variant
+`src/ExecutionProxy.sol` is `VM, IExecutor` -- a deliberately stateless, permissionless Weiroll executor. No owner, no reentrancy guard, no storage, no constructor, no admin functions: the audit surface of the arbitrary-execution piece is kept minimal (FR-11). Single entry point:
+- `executePath(bytes32[] commands, bytes[] state)` -- payable, called by the Router
 
-Both run the Weiroll program first, then verify slippage and transfer tokens. Native ETH is represented by sentinel address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`.
+The Router owns pulls, fees, slippage verification, and recipient transfers, and enforces the `nonReentrant` boundary. `receive()` and `fallback()` stay payable so the Router can forward native ETH and Weiroll sub-calls (e.g. WETH unwraps) can return it. Native ETH is represented by sentinel address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`.
 
 ### Weiroll Helpers
 
