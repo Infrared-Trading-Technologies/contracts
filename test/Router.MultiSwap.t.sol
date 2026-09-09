@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { Router } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
@@ -62,8 +62,9 @@ contract MockERC20 {
 /// @notice Covers FR-2 and the multi-swap rows of the spec's Error Handling and Edge Cases
 ///         tables: N-to-M happy path, native ETH as one of multiple inputs, pairwise duplicate
 ///         detection, input/output intersection, array-length parity, zero-amount checks,
-///         pro-rata protocol fee distribution, per-output partner fee on outputs, and per-output
-///         slippage enforcement (one of M outputs below its outputMin reverts the entire tx).
+///         per-token protocol fee retention, per-output partner fee on outputs, per-token
+///         `MultiSwap` event attribution across mixed decimals, and per-output slippage
+///         enforcement (one of M outputs below its outputMin reverts the entire tx).
 contract RouterMultiSwapTest is Test {
     ExecutionProxy public executor;
     Router public router;
@@ -80,19 +81,44 @@ contract RouterMultiSwapTest is Test {
 
     address public constant NATIVE_ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
-    /// @dev Mirror of Router's `Swap` event so `vm.expectEmit` can compare structurally.
-    event Swap(
+    /// @dev Mirror of Router's `MultiSwap` event so `vm.expectEmit` can compare structurally.
+    event MultiSwap(
         address indexed sender,
-        address inputToken,
-        uint256 inputAmount,
-        address outputToken,
-        uint256 amountOut,
-        uint256 amountToUser,
-        uint256 protocolFee,
-        uint256 partnerFee,
-        uint256 positiveSlippageCaptured,
+        address[] inputTokens,
+        uint256[] inputAmounts,
+        uint256[] protocolFees,
+        uint256[] inputPartnerFees,
+        address[] outputTokens,
+        uint256[] amountsOut,
+        uint256[] amountsToUser,
+        uint256[] outputPartnerFees,
+        uint256[] positiveSlippagesCaptured,
         address partnerRecipient
     );
+
+    /// @dev keccak of the single-swap `Swap` event signature; multi-swaps must never emit it.
+    bytes32 internal constant SWAP_SIG =
+        keccak256("Swap(address,address,uint256,address,uint256,uint256,uint256,uint256,uint256,address)");
+    bytes32 internal constant MULTISWAP_SIG = keccak256(
+        "MultiSwap(address,address[],uint256[],uint256[],uint256[],address[],uint256[],uint256[],uint256[],uint256[],address)"
+    );
+
+    /// @dev Asserts the Router emitted exactly one `MultiSwap` and zero `Swap` events.
+    function _assertOnlyMultiSwapEvent(Vm.Log[] memory logs) internal {
+        uint256 multi;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].emitter != address(router)) continue;
+            assertTrue(logs[i].topics[0] != SWAP_SIG, "multi-swap must not emit Swap");
+            if (logs[i].topics[0] == MULTISWAP_SIG) multi++;
+        }
+        assertEq(multi, 1, "exactly one MultiSwap event");
+    }
+
+    function _arr2(uint256 a, uint256 b) internal pure returns (uint256[] memory r) {
+        r = new uint256[](2);
+        r[0] = a;
+        r[1] = b;
+    }
 
     function setUp() public {
         executor = new ExecutionProxy();
@@ -210,8 +236,8 @@ contract RouterMultiSwapTest is Test {
     // ==================================================================
 
     /// @notice Two-input, two-output atomic swap with no fees. Asserts each output lands at the
-    ///         recipient, the Router holds zero residual of each token, and one Swap event is
-    ///         emitted per output (FR-17 shape preserved).
+    ///         recipient, the Router holds zero residual of each token, and a single `MultiSwap`
+    ///         event carries the per-token arrays.
     function test_MultiSwap_TwoInTwoOut() public {
         uint256 amtA = 1000e18;
         uint256 amtB = 500e18;
@@ -247,15 +273,26 @@ contract RouterMultiSwapTest is Test {
 
         Router.MultiSwapParams memory p = _mkParams(inputs, inAmts, outputs, quotes, mins, commands, state);
 
-        // Two Swap events expected, in output index order. effectiveInputToken=inputs[0]=A,
-        // inputAmountSum = sum(inputAmounts) = 1500e18. No fees, no slippage.
+        // One MultiSwap event with the input and output arrays verbatim. No fees, no slippage.
         vm.expectEmit(true, false, false, true, address(router));
-        emit Swap(user, address(tokenA), 1500e18, address(tokenC), outC, outC, 0, 0, 0, address(0));
-        vm.expectEmit(true, false, false, true, address(router));
-        emit Swap(user, address(tokenA), 1500e18, address(tokenD), outD, outD, 0, 0, 0, address(0));
+        emit MultiSwap(
+            user,
+            inputs,
+            inAmts,
+            _arr2(0, 0),
+            _arr2(0, 0),
+            outputs,
+            _arr2(outC, outD),
+            _arr2(outC, outD),
+            _arr2(0, 0),
+            _arr2(0, 0),
+            address(0)
+        );
 
+        vm.recordLogs();
         vm.prank(user);
         uint256[] memory amountsOut = router.swapMulti(p);
+        _assertOnlyMultiSwapEvent(vm.getRecordedLogs());
 
         assertEq(amountsOut.length, 2, "amountsOut length");
         assertEq(amountsOut[0], outC, "amountsOut[0]");
@@ -503,13 +540,13 @@ contract RouterMultiSwapTest is Test {
     }
 
     // ==================================================================
-    // Pro-rata fee tests (FR-3 / FR-4 / FR-5 in multi-swap form)
+    // Per-token fee tests (FR-3 / FR-4 / FR-5 in multi-swap form)
     // ==================================================================
 
     /// @notice 200 bps protocol fee on two equal-size inputs. Each input contributes its own
     ///         proportional fee retained on the Router in its own token (per-token retention,
-    ///         no token mixing). Exercises the multi-swap pro-rata accumulation in `_pullInputs`.
-    function test_MultiSwap_ProRataProtocolFee() public {
+    ///         no token mixing). Exercises the per-input fee path in `_processOneInput`.
+    function test_MultiSwap_PerTokenProtocolFee() public {
         uint256 amtIn = 1000e18;
         uint256 forward = 980e18; // 1000 - 2%
         uint256 outC = 900e18;
@@ -561,8 +598,9 @@ contract RouterMultiSwapTest is Test {
 
     /// @notice Output-side partner fee with two outputs of different sizes. Per-output attribution:
     ///         outputs [1000e18, 500e18] with 100 bps -> partner receives 10e18 of C and 5e18 of D.
-    ///         Exercises the per-output partner-fee branch in `_settleOutputs`.
-    function test_MultiSwap_ProRataPartnerFee_OnOutput() public {
+    ///         Exercises the per-output partner-fee branch in `_settleOutputs` and the
+    ///         `outputPartnerFees` / `amountsToUser` arrays of the `MultiSwap` event.
+    function test_MultiSwap_PartnerFee_OnOutput() public {
         uint256 amtA = 1000e18;
         uint256 amtB = 500e18;
         uint256 outC = 1000e18;
@@ -600,6 +638,23 @@ contract RouterMultiSwapTest is Test {
         p.partnerFeeOnOutput = true;
         p.partnerRecipient = alice;
 
+        // Input-side fee arrays are zero (fee is on output); output-side arrays carry the
+        // per-output partner fee in each output's own token and amountsOut stays gross.
+        vm.expectEmit(true, false, false, true, address(router));
+        emit MultiSwap(
+            user,
+            inputs,
+            inAmts,
+            _arr2(0, 0),
+            _arr2(0, 0),
+            outputs,
+            _arr2(outC, outD),
+            _arr2(990e18, 495e18),
+            _arr2(10e18, 5e18),
+            _arr2(0, 0),
+            alice
+        );
+
         vm.prank(user);
         router.swapMulti(p);
 
@@ -609,6 +664,93 @@ contract RouterMultiSwapTest is Test {
         // Receiver gets outputs net of partner fees.
         assertEq(tokenC.balanceOf(receiver), 990e18, "receiver C net");
         assertEq(tokenD.balanceOf(receiver), 495e18, "receiver D net");
+    }
+
+    /// @notice Nethermind NM-1048 [Info]: multi-swap events must not sum amounts across tokens
+    ///         with different decimals. Inputs are 10_000e6 of a 6-decimal token and 1e18 of an
+    ///         18-decimal token with a 30 bps protocol fee and a 100 bps input-side partner fee;
+    ///         one output captures positive slippage. Every emitted amount must sit at the index
+    ///         of its own token, in that token's units. The previous per-output `Swap` events
+    ///         reported inputAmount = 10_000e6 + 1e18 labelled as the 6-decimal token.
+    function test_MultiSwap_Event_PerTokenAmounts_MixedDecimals() public {
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        uint256 inUsdc = 10_000e6;
+        uint256 inA = 1e18;
+
+        // Fees on the pulled amounts, each in its own token.
+        uint256 protoUsdc = (inUsdc * 30) / 10_000; // 30e6
+        uint256 partnerUsdc = (inUsdc * 100) / 10_000; // 100e6
+        uint256 protoA = (inA * 30) / 10_000; // 3e15
+        uint256 partnerA = (inA * 100) / 10_000; // 1e16
+        uint256 forwardUsdc = inUsdc - protoUsdc - partnerUsdc;
+        uint256 forwardA = inA - protoA - partnerA;
+
+        // Output C is produced above its quote so positive slippage is captured; D is exact.
+        uint256 producedC = 1000e18;
+        uint256 quoteC = 990e18;
+        uint256 producedD = 500e18;
+
+        usdc.mint(user, inUsdc);
+        tokenA.mint(user, inA);
+        vm.startPrank(user);
+        usdc.approve(address(router), inUsdc);
+        tokenA.approve(address(router), inA);
+        vm.stopPrank();
+
+        address[] memory inputs = new address[](2);
+        inputs[0] = address(usdc);
+        inputs[1] = address(tokenA);
+        uint256[] memory inAmts = _arr2(inUsdc, inA);
+        address[] memory outputs = new address[](2);
+        outputs[0] = address(tokenC);
+        outputs[1] = address(tokenD);
+        uint256[] memory quotes = _arr2(quoteC, producedD);
+        uint256[] memory mins = _arr2(900e18, 400e18);
+
+        (bytes32[] memory commands, bytes[] memory state) = _build2In2OutSwapProgram(
+            address(usdc),
+            address(tokenA),
+            forwardUsdc,
+            forwardA,
+            address(tokenC),
+            address(tokenD),
+            producedC,
+            producedD
+        );
+
+        Router.MultiSwapParams memory p = _mkParams(inputs, inAmts, outputs, quotes, mins, commands, state);
+        p.protocolFeeBps = 30;
+        p.partnerFeeBps = 100;
+        p.partnerRecipient = alice;
+
+        vm.expectEmit(true, false, false, true, address(router));
+        emit MultiSwap(
+            user,
+            inputs,
+            inAmts,
+            _arr2(protoUsdc, protoA),
+            _arr2(partnerUsdc, partnerA),
+            outputs,
+            _arr2(producedC, producedD),
+            _arr2(quoteC, producedD),
+            _arr2(0, 0),
+            _arr2(producedC - quoteC, 0),
+            alice
+        );
+
+        vm.recordLogs();
+        vm.prank(user);
+        router.swapMulti(p);
+        _assertOnlyMultiSwapEvent(vm.getRecordedLogs());
+
+        // On-chain balances agree with the emitted per-token figures.
+        assertEq(usdc.balanceOf(address(router)), protoUsdc, "router retains USDC protocol fee");
+        assertEq(tokenA.balanceOf(address(router)), protoA, "router retains A protocol fee");
+        assertEq(usdc.balanceOf(alice), partnerUsdc, "partner USDC fee");
+        assertEq(tokenA.balanceOf(alice), partnerA, "partner A fee");
+        assertEq(tokenC.balanceOf(address(router)), producedC - quoteC, "router retains C slippage");
+        assertEq(tokenC.balanceOf(receiver), quoteC, "receiver C capped at quote");
+        assertEq(tokenD.balanceOf(receiver), producedD, "receiver D");
     }
 
     /// @notice One of M outputs falls below its outputMin -> entire tx reverts SlippageExceeded

@@ -143,8 +143,9 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     // Events
     // -------------------------------------------------------------------------
 
-    /// @notice Emitted once per swap (single or multi). The ten fields are sufficient to
-    ///         reconstruct full fee attribution off-chain per FR-17.
+    /// @notice Emitted once per single-input, single-output swap (`swap` / `swapPermit2`). The
+    ///         ten fields are sufficient to reconstruct full fee attribution off-chain per FR-17.
+    ///         Multi-swaps emit `MultiSwap` instead.
     event Swap(
         address indexed sender,
         address inputToken,
@@ -155,6 +156,38 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 protocolFee,
         uint256 partnerFee,
         uint256 positiveSlippageCaptured,
+        address partnerRecipient
+    );
+
+    /// @notice Emitted once per multi-input, multi-output swap (`swapMulti` / `swapMultiPermit2`).
+    ///         Every amount is denominated in the token at the same index of its parallel
+    ///         token array, so values are never summed across tokens with different decimals.
+    /// @param sender            `msg.sender` of the swap.
+    /// @param inputTokens       Input tokens, as supplied in `MultiSwapParams.inputTokens`.
+    /// @param inputAmounts      Caller-declared input amounts (parallel to `inputTokens`).
+    /// @param protocolFees      Protocol fee retained per input token (parallel to `inputTokens`).
+    /// @param inputPartnerFees  Input-side partner fee paid per input token (parallel to
+    ///                          `inputTokens`); all zero when `partnerFeeOnOutput` is true.
+    /// @param outputTokens      Output tokens, as supplied in `MultiSwapParams.outputTokens`.
+    /// @param amountsOut        Gross realized output per output token, i.e.
+    ///                          `amountsToUser + outputPartnerFees + positiveSlippagesCaptured`.
+    /// @param amountsToUser     Net amount delivered to `recipient` per output token.
+    /// @param outputPartnerFees Output-side partner fee paid per output token; all zero when
+    ///                          `partnerFeeOnOutput` is false.
+    /// @param positiveSlippagesCaptured Surplus above `outputQuotes[j]` retained by the Router
+    ///                          per output token; all zero when `passPositiveSlippageToUser`.
+    /// @param partnerRecipient  Partner fee recipient (zero address when no partner fee).
+    event MultiSwap(
+        address indexed sender,
+        address[] inputTokens,
+        uint256[] inputAmounts,
+        uint256[] protocolFees,
+        uint256[] inputPartnerFees,
+        address[] outputTokens,
+        uint256[] amountsOut,
+        uint256[] amountsToUser,
+        uint256[] outputPartnerFees,
+        uint256[] positiveSlippagesCaptured,
         address partnerRecipient
     );
 
@@ -511,38 +544,39 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     ///      `.call{value: ...}` to the executor by the caller.
     function _processPulledInputs(MultiSwapParams calldata params, uint256[] memory pulledArr)
         internal
-        returns (
-            uint256 nativeForwardAmount,
-            uint256 totalProtocolFees,
-            uint256 totalInputPartnerFees,
-            uint256 inputAmountSum,
-            address effectiveInputToken
-        )
+        returns (uint256 nativeForwardAmount, uint256[] memory protocolFees, uint256[] memory inputPartnerFees)
     {
-        uint256 n = params.inputTokens.length;
-        effectiveInputToken = params.inputTokens[0];
-        address exec = executor;
+        uint256 n = pulledArr.length;
+        protocolFees = new uint256[](n);
+        inputPartnerFees = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            address token = params.inputTokens[i];
-            inputAmountSum += params.inputAmounts[i];
+            uint256 nativeForward;
+            (protocolFees[i], inputPartnerFees[i], nativeForward) = _processOneInput(params, i, pulledArr[i]);
+            nativeForwardAmount += nativeForward;
+        }
+    }
 
-            uint256 pulled = pulledArr[i];
-            uint256 protocolFee = (pulled * params.protocolFeeBps) / 10_000;
-            uint256 inputPartnerFee = params.partnerFeeOnOutput ? 0 : (pulled * params.partnerFeeBps) / 10_000;
-            if (inputPartnerFee > 0) {
-                _transferOut(token, params.partnerRecipient, inputPartnerFee);
-            }
+    /// @dev Fee computation and staging for input slot `i` of a multi-swap. Computes the
+    ///      protocol fee and (when input-side) partner fee on `pulled`, pays the partner fee,
+    ///      and stages the remainder: ERC20s are transferred to the executor; native ETH is
+    ///      returned as `nativeForward` for the caller to attach to the `executePath` call.
+    ///      Split out of `_processPulledInputs` to keep the loop body within the EVM stack limit.
+    function _processOneInput(MultiSwapParams calldata params, uint256 i, uint256 pulled)
+        internal
+        returns (uint256 protocolFee, uint256 inputPartnerFee, uint256 nativeForward)
+    {
+        address token = params.inputTokens[i];
+        protocolFee = (pulled * params.protocolFeeBps) / 10_000;
+        inputPartnerFee = params.partnerFeeOnOutput ? 0 : (pulled * params.partnerFeeBps) / 10_000;
+        if (inputPartnerFee > 0) {
+            _transferOut(token, params.partnerRecipient, inputPartnerFee);
+        }
 
-            totalProtocolFees += protocolFee;
-            totalInputPartnerFees += inputPartnerFee;
-            uint256 forward = pulled - protocolFee - inputPartnerFee;
-
-            if (token == NATIVE_ETH_SENTINEL) {
-                nativeForwardAmount = forward;
-                effectiveInputToken = NATIVE_ETH_SENTINEL;
-            } else {
-                IERC20(token).safeTransfer(exec, forward);
-            }
+        uint256 forward = pulled - protocolFee - inputPartnerFee;
+        if (token == NATIVE_ETH_SENTINEL) {
+            nativeForward = forward;
+        } else {
+            IERC20(token).safeTransfer(executor, forward);
         }
     }
 
@@ -649,80 +683,34 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
         }
     }
 
-    /// @dev Header-like context bundle for `_emitMultiSwaps` / `_emitOneMultiSwap`. Exists only
-    ///      to collapse would-be top-of-stack params in the emit path; no storage, no ABI impact.
-    struct _MultiEmitCtx {
-        address effectiveInputToken;
-        uint256 inputAmountSum;
-        uint256 totalProtocolFees;
-        uint256 totalInputPartnerFees;
-    }
-
-    /// @dev Emits one `Swap` event per output. Keeps the FR-17 event shape identical to the
-    ///      single-swap case; pro-rata attribution policy is equal-split of aggregate input-
-    ///      side fees across outputs, with the remainder (from integer division) attributed
-    ///      to the final output so sums across events reconstruct totals exactly. See the
-    ///      NatSpec on `swapMulti` for the attribution contract.
-    function _emitMultiSwaps(
+    /// @dev Emits the single `MultiSwap` event for a multi-swap. Every per-token amount is
+    ///      reported in its own token; nothing is summed or split across tokens. `amountsOut`
+    ///      is reconstructed as the gross realized output so it mirrors `Swap.amountOut`.
+    function _emitMultiSwap(
         MultiSwapParams calldata params,
-        _MultiEmitCtx memory ctx,
-        uint256[] memory amountsOut,
+        uint256[] memory protocolFees,
+        uint256[] memory inputPartnerFees,
+        uint256[] memory amountsToUser,
         uint256[] memory positiveSlippages,
         uint256[] memory outputPartnerFees
     ) internal {
-        uint256 nOut = params.outputTokens.length;
+        uint256 nOut = amountsToUser.length;
+        uint256[] memory grossOut = new uint256[](nOut);
         for (uint256 j = 0; j < nOut; ++j) {
-            _emitSwap10(
-                ctx.effectiveInputToken,
-                ctx.inputAmountSum,
-                params.outputTokens[j],
-                amountsOut[j] + outputPartnerFees[j] + positiveSlippages[j],
-                amountsOut[j],
-                _splitFeeProRata(ctx.totalProtocolFees, j, nOut),
-                _splitFeeProRata(ctx.totalInputPartnerFees, j, nOut) + outputPartnerFees[j],
-                positiveSlippages[j],
-                params.partnerRecipient
-            );
+            grossOut[j] = amountsToUser[j] + outputPartnerFees[j] + positiveSlippages[j];
         }
-    }
-
-    /// @dev Pro-rata split of an aggregate fee total across `nOut` outputs. The final output
-    ///      absorbs the integer-division remainder so summing across events reconstructs the
-    ///      total exactly. Extracted to keep `_emitOneMultiSwap` under the EVM stack limit.
-    function _splitFeeProRata(uint256 total, uint256 jIdx, uint256 nOut) internal pure returns (uint256) {
-        uint256 base = total / nOut;
-        if (jIdx == nOut - 1) return base + (total - base * nOut);
-        return base;
-    }
-
-    /// @dev Final-mile emit helper that takes the nine non-sender fields of the `Swap` event
-    ///      as primitive args and does nothing else. Ensures the emit statement runs in a
-    ///      function scope with exactly ten stack slots live (nine params plus the implicit
-    ///      `msg.sender`), side-stepping the EVM's 16-slot DUP/SWAP limit that otherwise
-    ///      trips on the ten-field `Swap` event in any helper that also holds a calldata
-    ///      params ref and a memory ctx ref.
-    function _emitSwap10(
-        address _inputToken,
-        uint256 _inputAmount,
-        address _outputToken,
-        uint256 _amountOut,
-        uint256 _amountToUser,
-        uint256 _protocolFee,
-        uint256 _partnerFee,
-        uint256 _positiveSlippage,
-        address _partnerRecipient
-    ) internal {
-        emit Swap(
+        emit MultiSwap(
             msg.sender,
-            _inputToken,
-            _inputAmount,
-            _outputToken,
-            _amountOut,
-            _amountToUser,
-            _protocolFee,
-            _partnerFee,
-            _positiveSlippage,
-            _partnerRecipient
+            params.inputTokens,
+            params.inputAmounts,
+            protocolFees,
+            inputPartnerFees,
+            params.outputTokens,
+            grossOut,
+            amountsToUser,
+            outputPartnerFees,
+            positiveSlippages,
+            params.partnerRecipient
         );
     }
 
@@ -746,12 +734,11 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
      *         executor in a single `executePath` call, snapshots every output before/after,
      *         applies per-output positive-slippage capping and (optionally output-side) partner
      *         fees, enforces each `outputMins[j]`, and pays every output to `recipient`. Emits
-     *         one `Swap` event per output.
-     * @dev Pro-rata fee attribution policy: input-side `protocolFee` and `partnerFee` totals
-     *      are split equally across outputs in the emitted events; the final output absorbs the
-     *      integer-division remainder so the sum across events reconstructs the totals exactly.
-     *      Output-side partner fees are attributed to their specific output. This policy lets
-     *      off-chain indexers credit attribution without changing the FR-17 event shape.
+     *         one `MultiSwap` event carrying per-token arrays.
+     * @dev Fee attribution is reported per token: input-side protocol and partner fees are
+     *      emitted per input token in that token's units, output-side partner fees and
+     *      captured positive slippage per output token in that token's units. Amounts are
+     *      never summed across tokens.
      */
     // forgefmt: disable-next-item
     function swapMulti(MultiSwapParams calldata params) external payable nonReentrant whenNotPaused returns (uint256[] memory amountsOut) {
@@ -799,20 +786,15 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @dev Shared post-pull body for `swapMulti` and `swapMultiPermit2`. Takes the per-token
     ///      amounts already received by the Router, processes input-side fees, forwards the
-    ///      remainder to the executor, snapshots and settles outputs, and emits one `Swap`
-    ///      event per output. Behavior is identical regardless of which pull mechanism
-    ///      populated `pulledArr`.
+    ///      remainder to the executor, snapshots and settles outputs, and emits one `MultiSwap`
+    ///      event. Behavior is identical regardless of which pull mechanism populated
+    ///      `pulledArr`.
     function _executeMultiSwap(MultiSwapParams calldata params, uint256[] memory pulledArr)
         internal
         returns (uint256[] memory amountsOut)
     {
-        (
-            uint256 nativeForwardAmount,
-            uint256 totalProtocolFees,
-            uint256 totalInputPartnerFees,
-            uint256 inputAmountSum,
-            address effectiveInputToken
-        ) = _processPulledInputs(params, pulledArr);
+        (uint256 nativeForwardAmount, uint256[] memory protocolFees, uint256[] memory inputPartnerFees) =
+            _processPulledInputs(params, pulledArr);
 
         uint256 nOut = params.outputTokens.length;
         uint256[] memory outputBefore = new uint256[](nOut);
@@ -838,18 +820,7 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
         uint256[] memory outputPartnerFees;
         (amountsOut, positiveSlippages, outputPartnerFees) = _settleOutputs(params, outputBefore);
 
-        _emitMultiSwaps(
-            params,
-            _MultiEmitCtx({
-                effectiveInputToken: effectiveInputToken,
-                inputAmountSum: inputAmountSum,
-                totalProtocolFees: totalProtocolFees,
-                totalInputPartnerFees: totalInputPartnerFees
-            }),
-            amountsOut,
-            positiveSlippages,
-            outputPartnerFees
-        );
+        _emitMultiSwap(params, protocolFees, inputPartnerFees, amountsOut, positiveSlippages, outputPartnerFees);
     }
 
     // -------------------------------------------------------------------------
