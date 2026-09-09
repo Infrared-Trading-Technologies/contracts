@@ -50,13 +50,7 @@ contract UniswapV4SwapHelpersForkTest is Test {
     function test_SwapExactInSingle_USDCtoUSDT() public {
         // USDC/USDT 0.001% V4 pool: fee=10, tickSpacing=1, no hooks.
         // PoolId on chain: 0x8aa4e11cbdf30eedc92100f4c8a31ff748e201d44712cc8c90d189edaa8e4e47
-        PoolKey memory key = PoolKey({
-            currency0: USDC,
-            currency1: USDT,
-            fee: 10,
-            tickSpacing: 1,
-            hooks: address(0)
-        });
+        PoolKey memory key = PoolKey({ currency0: USDC, currency1: USDT, fee: 10, tickSpacing: 1, hooks: address(0) });
 
         uint256 amountIn = 10_000_000; // 10 USDC
         uint256 minAmountOut = 9_800_000; // 9.8 USDT (~2% slippage tolerance for the fork test)
