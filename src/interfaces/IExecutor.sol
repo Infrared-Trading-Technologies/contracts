@@ -12,6 +12,10 @@ pragma solidity ^0.8.24;
  *      The function is `payable` so the Router can forward native ETH (wrapped via `.call{value}`)
  *      to the executor in the same call when the input token is the native ETH sentinel.
  *
+ *      Implementations must restrict `executePath` to the Router that drives them: the Router
+ *      stages user funds on the executor before calling it, so an open entry point would let
+ *      any address run a program against those funds.
+ *
  *      Reverts inside the executor (including out-of-gas, explicit `revert`, or failed sub-calls)
  *      propagate up to the Router. No `try/catch` is used, preserving atomic failure: a partial
  *      execution never leaves user funds stranded because the entire transaction is rolled back.

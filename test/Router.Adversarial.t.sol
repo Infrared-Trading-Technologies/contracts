@@ -106,8 +106,8 @@ contract RouterAdversarialTest is Test {
     bytes4 internal constant REENTRANT_GUARD_SELECTOR = bytes4(keccak256("ReentrancyGuardReentrantCall()"));
 
     function setUp() public {
-        executor = new ExecutionProxy();
         router = new Router(address(this), liquidator);
+        executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
 

@@ -15,8 +15,8 @@ contract DeployScript is Script {
 
         vm.startBroadcast();
 
-        ExecutionProxy proxy = new ExecutionProxy();
         Router router = new Router(msg.sender, msg.sender);
+        ExecutionProxy proxy = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(proxy));
         router.acceptExecutor();
 

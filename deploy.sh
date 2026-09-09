@@ -209,7 +209,8 @@ generate_registry() {
         # ExecutionProxy uses a pinned namespace independent of SALT_VERSION;
         # see DeployCreate3.s.sol EXECUTION_PROXY_SALT_NAMESPACE. Its bytecode
         # changes with each VM fix; current bump .v3 -> .v4 lands the
-        # revert-data classification fix (Nethermind NM-1048).
+        # revert-data classification fix and the Router-only executePath
+        # gate (Nethermind NM-1048).
         local packed
         if [[ "$contract" == "ExecutionProxy" ]]; then
             packed="infrared.contracts.executionproxy.v4"
@@ -624,9 +625,9 @@ verify() {
 
         echo "Verifying $contract at $addr..."
 
-        # Build per-contract `forge verify-contract` args. Router and
-        # UniswapV4SwapHelpers carry constructor immutables that need
-        # ABI-encoding; ExecutionProxy and the stateless helpers do
+        # Build per-contract `forge verify-contract` args. Router,
+        # ExecutionProxy and UniswapV4SwapHelpers carry constructor
+        # immutables that need ABI-encoding; the stateless helpers do
         # not. Run the same `forge verify-contract … --watch` invocation
         # in every branch — exit 0 means Etherscan accepted (newly
         # verified OR already verified, both fine), non-zero means a
@@ -654,9 +655,23 @@ verify() {
                 --etherscan-api-key "$api_key" \
                 --constructor-args "$(cast abi-encode 'constructor(address,address)' "$universal_router" "$permit2_addr")" \
                 --watch && verify_ok=1
+        elif [[ "$contract" == "ExecutionProxy" ]]; then
+            # ExecutionProxy constructor: (address router) -- the Router
+            # this executor is bound to (executePath is Router-only).
+            local router_addr
+            router_addr=$(jq -r '.contracts.Router.address // empty' "$registry_file")
+            if [[ -z "$router_addr" ]]; then
+                echo -e "${YELLOW}Skipping $contract verification: Router address missing from registry${NC}"
+                continue
+            fi
+            forge verify-contract "$addr" "$path" \
+                --chain-id "$chain_id" \
+                --verifier-url "$api_url" \
+                --etherscan-api-key "$api_key" \
+                --constructor-args "$(cast abi-encode 'constructor(address)' "$router_addr")" \
+                --watch && verify_ok=1
         else
-            # ExecutionProxy (stateless post-refactor) + Weiroll helpers
-            # have no constructor args.
+            # Weiroll helpers have no constructor args.
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \

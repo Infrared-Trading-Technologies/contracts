@@ -95,8 +95,8 @@ contract RouterAccessTest is Test {
     event FundsTransferred(address[] tokens, uint256[] amounts, address dest);
 
     function setUp() public {
-        executor = new ExecutionProxy();
         router = new Router(owner, liquidator);
+        executor = new ExecutionProxy(address(router));
 
         vm.startPrank(owner);
         router.setPendingExecutor(address(executor));

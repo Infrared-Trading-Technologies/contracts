@@ -100,7 +100,7 @@ contract WeirollTestHelperTest is Test {
         tokenB = new MockERC20ForHelper("Token B", "TKNB", 18);
         dex = new MockDEX();
 
-        proxy = new ExecutionProxy();
+        proxy = new ExecutionProxy(address(this));
 
         vm.deal(address(this), 100 ether);
     }

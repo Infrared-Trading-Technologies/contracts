@@ -61,8 +61,9 @@ contract DeployCreate3 is Script {
     // salt is pinned to a namespace independent of `SALT_VERSION` so each fixed
     // bytecode lands at a fresh CREATE3 address while Router and helper
     // deployments stay on their existing v1 addresses. Current bump: .v3 -> .v4
-    // accompanies the revert-data classification fix in VM._execute
-    // (Nethermind NM-1048); .v2 -> .v3 landed FLAG_DATA dispatcher support.
+    // accompanies the revert-data classification fix in VM._execute and the
+    // Router-only executePath gate (Nethermind NM-1048); .v2 -> .v3 landed
+    // FLAG_DATA dispatcher support.
     string public constant EXECUTION_PROXY_SALT_NAMESPACE = "infrared.contracts.executionproxy.v4";
 
     // UniswapV4SwapHelpers bytecode changes when its embedded V4 struct layout
@@ -300,16 +301,17 @@ contract DeployCreate3 is Script {
 
         vm.startBroadcast();
 
-        // Deploy ExecutionProxy (pure-VM executor, no constructor args per FR-11).
-        bytes memory executionProxyCode = type(ExecutionProxy).creationCode;
-        (result.executionProxy, result.deployed[0]) =
-            deployIfNeeded(getExecutionProxySalt(), executionProxyCode, EXECUTION_PROXY);
-
         // Deploy Router with (owner, liquidator) constructor args. Router holds user approvals
         // and the entire fee / slippage model; ExecutionProxy is forwarded funds + commands on each call.
         bytes memory routerCode = abi.encodePacked(type(Router).creationCode, abi.encode(routerOwner, routerLiquidator));
         (result.router, result.routerDeployed) = deployIfNeeded(getSalt(ROUTER), routerCode, ROUTER);
         result.deployed[1] = result.routerDeployed;
+
+        // Deploy ExecutionProxy bound to the Router: executePath is callable only by that
+        // address (Nethermind NM-1048). Router first so its CREATE3 address is final here.
+        bytes memory executionProxyCode = abi.encodePacked(type(ExecutionProxy).creationCode, abi.encode(result.router));
+        (result.executionProxy, result.deployed[0]) =
+            deployIfNeeded(getExecutionProxySalt(), executionProxyCode, EXECUTION_PROXY);
 
         // Deploy stateless helpers (no constructor args)
         (result.tupler, result.deployed[2]) = deployIfNeeded(getSalt(TUPLER), type(Tupler).creationCode, TUPLER);

@@ -33,10 +33,10 @@ contract RouterInvariantTest is Test {
     address public constant NATIVE_ETH_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     function setUp() public {
-        executor = new ExecutionProxy();
         // Owner and liquidator are this test contract -- neither is exercised by the handler, and
         // the admin surface is covered separately in test/Router.Access.t.sol.
         router = new Router(address(this), address(this));
+        executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
 
