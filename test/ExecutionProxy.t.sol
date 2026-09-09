@@ -478,15 +478,13 @@ contract ExecutionProxyTest is Test {
         // state[0] = address(proxy)  -- arg to balanceOf
         // state[1] = empty bytes     -- FLAG_DATA empty calldata
         // state[2] = placeholder     -- will be overwritten by command[0]'s return
-        bytes[] memory state = WeirollTestHelper.createState3(
-            WeirollTestHelper.encodeAddress(address(proxy)), bytes(""), bytes("")
-        );
+        bytes[] memory state =
+            WeirollTestHelper.createState3(WeirollTestHelper.encodeAddress(address(proxy)), bytes(""), bytes(""));
 
         // commands[0]: STATICCALL tokenA.balanceOf(state[0]) -> state[2]
         // commands[1]: VALUECALL+FLAG_DATA target, value=state[2], data=state[1]
         bytes32[] memory commands = new bytes32[](2);
-        commands[0] =
-            WeirollTestHelper.buildStaticCallOneArg(address(tokenA), bytes4(0x70a08231), 0, 2);
+        commands[0] = WeirollTestHelper.buildStaticCallOneArg(address(tokenA), bytes4(0x70a08231), 0, 2);
         commands[1] = WeirollTestHelper.buildValueCallWithRawData(address(target), 2, 1);
 
         proxy.executePath{ value: amount }(commands, state);

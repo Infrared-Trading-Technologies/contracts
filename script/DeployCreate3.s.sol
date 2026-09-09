@@ -146,7 +146,7 @@ contract DeployCreate3 is Script {
         try vm.envAddress("UNIVERSAL_ROUTER") returns (address ur) {
             require(ur != address(0), "UNIVERSAL_ROUTER is zero");
             return ur;
-        } catch {}
+        } catch { }
 
         // Universal Router 2.1.1 — canonical deployments per
         // https://developers.uniswap.org/docs/protocols/v4/deployments

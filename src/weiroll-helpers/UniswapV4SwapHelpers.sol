@@ -255,5 +255,5 @@ contract UniswapV4SwapHelpers {
     ///         native-output leg. Without a receive(), TAKE_ALL of
     ///         currencyOut == address(0) would revert when UR forwards
     ///         the proceeds to this contract.
-    receive() external payable {}
+    receive() external payable { }
 }
