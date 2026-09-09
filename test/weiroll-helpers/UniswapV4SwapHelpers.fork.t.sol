@@ -56,7 +56,7 @@ contract UniswapV4SwapHelpersForkTest is Test {
     }
 
     function test_VersionBump() public view {
-        assertEq(helper.VERSION(), 2, "VERSION must be bumped to 2 with minHopPriceX36 fix");
+        assertEq(helper.VERSION(), 3, "VERSION must be bumped to 3 with the balance-delta fix");
     }
 
     function test_SwapExactInSingle_USDCtoUSDT() public {
@@ -90,5 +90,28 @@ contract UniswapV4SwapHelpersForkTest is Test {
         assertEq(usdtAfter - usdtBefore, amountOut, "USDT delta != returned amountOut");
         assertGe(amountOut, minAmountOut, "amountOut below floor");
         assertGt(amountOut, 0, "amountOut must be positive");
+    }
+
+    /// @notice Nethermind NM-1048 [Info]: a balance the helper already holds must not be
+    ///         credited as swap output or paid to the receiver. Pre-fund the helper with USDT
+    ///         and confirm the receiver only gets the swap delta against the real Universal
+    ///         Router and PoolManager.
+    function test_SwapExactInSingle_StrayBalanceNotCredited() public {
+        PoolKey memory key = PoolKey({ currency0: USDC, currency1: USDT, fee: 10, tickSpacing: 1, hooks: address(0) });
+        uint256 stray = 50_000_000; // 50 USDT parked in the helper by a third party
+        deal(USDT, address(helper), stray);
+
+        uint256 amountIn = 10_000_000; // 10 USDC
+        uint256 minAmountOut = 9_800_000;
+        uint256 usdtBefore = IERC20(USDT).balanceOf(taker);
+
+        vm.startPrank(taker);
+        IERC20(USDC).approve(address(helper), amountIn);
+        uint256 amountOut = helper.swapExactInSingle(key, true, amountIn, minAmountOut, type(uint256).max, taker, "");
+        vm.stopPrank();
+
+        assertEq(IERC20(USDT).balanceOf(taker) - usdtBefore, amountOut, "receiver delta != returned amountOut");
+        assertLt(amountOut, stray, "sanity: swap output must be smaller than the stray balance");
+        assertEq(IERC20(USDT).balanceOf(address(helper)), stray, "stray balance must remain in the helper");
     }
 }
