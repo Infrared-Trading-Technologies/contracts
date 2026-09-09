@@ -310,6 +310,40 @@ EOF
     echo -e "${GREEN}Registry generated: $registry_file${NC}"
 }
 
+# Pre-deploy guard for UniswapV4SwapHelpers (Nethermind NM-1048): the helper
+# reproduces Uniswap's ExactInputSingleParams struct locally, and some chains
+# host two Universal Router revisions with different struct shapes. Run the
+# chain's fork layout test against the exact router DeployCreate3 pins so a
+# wrong pin fails here, not after the helper is deployed. The test forks from
+# the chain's rpcEnv (already required by deploy/dry-run) and must PASS; a
+# skipped test (no RPC) is treated as a failure so the gate cannot be bypassed
+# silently. Chains with no Universal Router pin skip UniswapV4SwapHelpers and
+# therefore skip this gate.
+check_v4_layout() {
+    local chain_id="$1"
+    local test_name
+    case "$chain_id" in
+        1) test_name="test_Layout_Ethereum" ;;
+        8453) test_name="test_Layout_Base" ;;
+        42161) test_name="test_Layout_ArbitrumOne" ;;
+        *)
+            echo "No Universal Router pinned for chain $chain_id; UniswapV4SwapHelpers is skipped, so is the layout guard."
+            return 0
+            ;;
+    esac
+
+    echo "=== Checking UniswapV4SwapHelpers struct layout against the pinned Universal Router ==="
+    local out
+    if ! out=$(cd "$SCRIPT_DIR" && forge test --match-contract UniswapV4SwapHelpersForkTest --match-test "$test_name" 2>&1) \
+        || ! grep -q "\[PASS\] $test_name" <<< "$out"; then
+        echo "$out" | tail -n 25
+        echo -e "${RED}Error: $test_name did not pass. The helper's ExactInputSingleParams layout does not match the pinned Universal Router on chain $chain_id (or the fork could not run).${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Layout guard passed ($test_name)${NC}"
+    echo ""
+}
+
 deploy() {
     local chain_id="$1"
 
@@ -356,6 +390,7 @@ deploy() {
     fi
 
     check_create3_factory "$rpc_url"
+    check_v4_layout "$chain_id"
 
     local salt_version="${SALT_VERSION:-v1}"
     echo "Salt version: $salt_version"
@@ -481,6 +516,7 @@ dry_run() {
     local rpc_url="${!rpc_env}"
 
     check_create3_factory "$rpc_url"
+    check_v4_layout "$chain_id"
 
     local salt_version="${SALT_VERSION:-v1}"
     echo "Salt version: $salt_version"
