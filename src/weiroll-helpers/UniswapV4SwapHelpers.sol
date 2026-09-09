@@ -90,6 +90,11 @@ struct ExactInputSingleParams {
  *      This contract holds no persistent state — tokens flow through
  *      the same call frame they entered in. Approvals to Permit2 are
  *      reset every swap via forceApprove, not left dangling at max.
+ *
+ *      Fee-on-transfer tokens are NOT supported. SETTLE_ALL opens a debt
+ *      for exactly `amountIn`; a token that delivers less than that to
+ *      the PoolManager reverts with CurrencyNotSettled. Recipes must
+ *      only route tokens whose transfers deliver the full amount.
  */
 contract UniswapV4SwapHelpers {
     using SafeERC20 for IERC20;
