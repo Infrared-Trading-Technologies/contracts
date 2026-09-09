@@ -425,22 +425,84 @@ contract RouterFeesTest is Test {
         assertEq(tokenB.balanceOf(address(router)), 100e18, "router retains capped surplus only");
     }
 
-    /// @notice Partner fee on output brings the final amount below outputMin -> SlippageExceeded.
-    function test_PartnerFeeOutput_PushesBelowOutputMin_Reverts() public {
+    /// @notice Nethermind NM-1048 [Low]: with positive-slippage capture on, the most the user
+    ///         can be credited is `outputQuote - fee(outputQuote)`. An `outputMin` above that
+    ///         used to pass validation and then revert `SlippageExceeded` after the swap had run
+    ///         (this exact case: quote 1000e18, 100 bps output fee, min 995e18 > 990e18). It must
+    ///         now be rejected up front, before any input is pulled.
+    function test_PartnerFeeOutput_UnreachableOutputMin_RevertsAtValidation() public {
         uint256 amountIn = 1000e18;
-        uint256 producedOut = 1000e18;
         _fundUser(amountIn);
 
-        Router.SwapParams memory p = _mkParams(amountIn, amountIn, producedOut, 1000e18, 995e18);
-        p.partnerFeeBps = 100; // 10e18 fee on 1000e18 -> 990e18 < 995e18 min
+        Router.SwapParams memory p = _mkParams(amountIn, amountIn, 1000e18, 1000e18, 995e18);
+        p.partnerFeeBps = 100;
+        p.partnerRecipient = alice;
+        p.partnerFeeOnOutput = true;
+        p.passPositiveSlippageToUser = false;
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(Router.OutputMinUnreachable.selector, uint256(995e18), uint256(990e18)));
+        router.swap(p);
+        assertEq(tokenA.balanceOf(user), amountIn, "nothing pulled: rejected before execution");
+    }
+
+    /// @notice The ceiling itself is reachable: min == quote - fee(quote) settles with the user
+    ///         credited exactly that amount.
+    function test_PartnerFeeOutput_OutputMinAtMaxReachable_Succeeds() public {
+        uint256 amountIn = 1000e18;
+        _fundUser(amountIn);
+
+        Router.SwapParams memory p = _mkParams(amountIn, amountIn, 1000e18, 1000e18, 990e18);
+        p.partnerFeeBps = 100;
+        p.partnerRecipient = alice;
+        p.partnerFeeOnOutput = true;
+
+        vm.prank(user);
+        uint256 returned = router.swap(p);
+
+        assertEq(returned, 990e18, "user credited exactly the ceiling");
+        assertEq(tokenB.balanceOf(receiver), 990e18, "receiver");
+        assertEq(tokenB.balanceOf(alice), 10e18, "partner fee");
+    }
+
+    /// @notice A reachable outputMin that the realized output still misses after the output
+    ///         fee keeps failing at settlement with the exact net amount, as before.
+    function test_PartnerFeeOutput_ShortSwap_StillSlippageExceeded() public {
+        uint256 amountIn = 1000e18;
+        _fundUser(amountIn);
+
+        // min 985e18 <= ceiling 990e18, but produced 990e18 nets to 980.1e18.
+        Router.SwapParams memory p = _mkParams(amountIn, amountIn, 990e18, 1000e18, 985e18);
+        p.partnerFeeBps = 100;
         p.partnerRecipient = alice;
         p.partnerFeeOnOutput = true;
 
         vm.prank(user);
         vm.expectRevert(
-            abi.encodeWithSelector(Router.SlippageExceeded.selector, address(tokenB), uint256(990e18), uint256(995e18))
+            abi.encodeWithSelector(
+                Router.SlippageExceeded.selector, address(tokenB), uint256(980.1e18), uint256(985e18)
+            )
         );
         router.swap(p);
+    }
+
+    /// @notice With pass-through on there is no cap, so an outputMin up to outputQuote stays
+    ///         reachable and validation must keep accepting it.
+    function test_PartnerFeeOutput_PassThrough_OutputMinUpToQuoteAccepted() public {
+        uint256 amountIn = 1000e18;
+        _fundUser(amountIn);
+
+        Router.SwapParams memory p = _mkParams(amountIn, amountIn, 1100e18, 1000e18, 995e18);
+        p.partnerFeeBps = 100;
+        p.partnerRecipient = alice;
+        p.partnerFeeOnOutput = true;
+        p.passPositiveSlippageToUser = true;
+
+        vm.prank(user);
+        uint256 returned = router.swap(p);
+
+        assertEq(returned, 1089e18, "1100 less 1% output fee, no cap");
+        assertEq(tokenB.balanceOf(alice), 11e18, "partner fee on the uncapped amount");
     }
 
     // ==================================================================
@@ -547,7 +609,9 @@ contract RouterFeesTest is Test {
 
     /// @notice No silent short payment: regardless of produced amount, quote, min, and bps
     ///         settings, if the tx succeeds the user receives >= minOut; if it fails it fails
-    ///         with SlippageExceeded computed on the exact final user amount.
+    ///         with SlippageExceeded computed on the exact final user amount. A minOut above the
+    ///         reachable ceiling (quote less the output-side fee, capture on) is rejected up
+    ///         front with OutputMinUnreachable instead of failing after execution.
     function testFuzz_NoSilentShortPayment(
         uint256 produced,
         uint256 quote,
@@ -581,6 +645,7 @@ contract RouterFeesTest is Test {
 
         uint256 capped = produced > quote ? quote : produced;
         uint256 expectedToUser = capped - (onOutput ? (capped * partnerBps) / 10_000 : 0);
+        uint256 maxReachable = quote - (onOutput ? (quote * partnerBps) / 10_000 : 0);
 
         _fundUser(amountIn);
 
@@ -590,7 +655,11 @@ contract RouterFeesTest is Test {
         p.partnerRecipient = partnerBps > 0 ? alice : address(0);
         p.partnerFeeOnOutput = onOutput;
 
-        if (expectedToUser < minOut) {
+        if (minOut > maxReachable) {
+            vm.prank(user);
+            vm.expectRevert(abi.encodeWithSelector(Router.OutputMinUnreachable.selector, minOut, maxReachable));
+            router.swap(p);
+        } else if (expectedToUser < minOut) {
             vm.prank(user);
             vm.expectRevert(
                 abi.encodeWithSelector(Router.SlippageExceeded.selector, address(tokenB), expectedToUser, minOut)
