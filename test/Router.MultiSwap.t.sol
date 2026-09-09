@@ -6,6 +6,8 @@ import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { Router } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
 import { MockDEX } from "./mocks/MockDEX.sol";
+import { ReentrantPartner } from "./mocks/ReentrantPartner.sol";
+import { IExecutor } from "../src/interfaces/IExecutor.sol";
 
 /// @title MockERC20
 /// @notice Minimal ERC20 for testing. Duplicated from Router.t.sol/Router.Fees.t.sol to keep
@@ -121,8 +123,8 @@ contract RouterMultiSwapTest is Test {
     }
 
     function setUp() public {
-        executor = new ExecutionProxy();
         router = new Router(address(this), liquidator);
+        executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
 
@@ -336,6 +338,54 @@ contract RouterMultiSwapTest is Test {
         assertEq(tokenA.balanceOf(address(executor)) - executorTokenABefore, amtA, "executor received tokenA");
         // Router holds no ETH residual after forwarding.
         assertEq(address(router).balance, 0, "router 0 ETH");
+    }
+
+    /// @notice Nethermind NM-1048: a malicious `partnerRecipient` receives control when its
+    ///         native-ETH partner fee is paid while earlier input slots are already staged on the
+    ///         executor. Inputs are [tokenA, NATIVE], so tokenA sits on the executor when the
+    ///         partner's `receive()` runs. The partner calls `executor.executePath` with a program
+    ///         that transfers the staged tokenA to itself, inside try/catch so the outer swap
+    ///         completes. Before the Router-only gate this theft succeeded and the swap settled
+    ///         normally; now the reentry reverts `NotRouter` and the staged funds are intact.
+    function test_MultiSwap_MaliciousPartner_CannotReenterExecutor() public {
+        uint256 ethAmt = 1 ether;
+        uint256 amtA = 1000e18;
+        uint16 partnerBps = 100;
+        uint256 forwardA = amtA - (amtA * partnerBps) / 10_000; // 990e18 staged on the executor
+        uint256 ethFee = (ethAmt * partnerBps) / 10_000;
+
+        ReentrantPartner attacker = new ReentrantPartner(IExecutor(address(executor)), address(tokenA));
+
+        tokenA.mint(user, amtA);
+        vm.prank(user);
+        tokenA.approve(address(router), amtA);
+
+        address[] memory inputs = new address[](2);
+        inputs[0] = address(tokenA);
+        inputs[1] = NATIVE_ETH;
+        uint256[] memory inAmts = _arr2(amtA, ethAmt);
+        address[] memory outputs = new address[](2);
+        outputs[0] = address(tokenC);
+        outputs[1] = address(tokenD);
+        (bytes32[] memory commands, bytes[] memory state) =
+            _buildMultiMintProgram(address(tokenC), address(tokenD), 1000e18, 500e18);
+        Router.MultiSwapParams memory p =
+            _mkParams(inputs, inAmts, outputs, _arr2(1000e18, 500e18), _arr2(900e18, 400e18), commands, state);
+        p.partnerFeeBps = partnerBps;
+        p.partnerRecipient = address(attacker);
+
+        vm.prank(user);
+        router.swapMulti{ value: ethAmt }(p);
+
+        assertTrue(attacker.attackAttempted(), "partner received control mid-swap");
+        assertFalse(attacker.attackSucceeded(), "reentry into the executor must fail");
+        assertEq(attacker.lastRevertSelector(), ExecutionProxy.NotRouter.selector, "rejected as non-Router");
+        assertEq(attacker.stolen(), 0, "nothing stolen");
+        assertEq(tokenA.balanceOf(address(attacker)), amtA - forwardA, "partner holds only its legitimate tokenA fee");
+        assertEq(tokenA.balanceOf(address(executor)), forwardA, "staged tokenA intact on the executor");
+        assertEq(address(attacker).balance, ethFee, "partner still received its legitimate ETH fee");
+        assertEq(tokenC.balanceOf(receiver), 1000e18, "swap completed: output C");
+        assertEq(tokenD.balanceOf(receiver), 500e18, "swap completed: output D");
     }
 
     /// @dev Extracted to keep the native-ETH-input multi-swap test body under the EVM stack limit.

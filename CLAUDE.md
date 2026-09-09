@@ -49,8 +49,10 @@ Both repos must agree on deployed addresses: after a deploy, populate the chain 
 
 ### Core Contract
 
-`src/ExecutionProxy.sol` is `VM, IExecutor` -- a deliberately stateless, permissionless Weiroll executor. No owner, no reentrancy guard, no storage, no constructor, no admin functions: the audit surface of the arbitrary-execution piece is kept minimal (FR-11). Single entry point:
-- `executePath(bytes32[] commands, bytes[] state)` -- payable, called by the Router
+`src/ExecutionProxy.sol` is `VM, IExecutor` -- a deliberately minimal Weiroll executor bound to one Router. The constructor takes the Router address (immutable `ROUTER`); `executePath` reverts `NotRouter` for any other caller, because the Router stages user funds on the executor and an open entry point would let anyone run a program against them. No owner, no reentrancy guard of its own, no other storage, no admin functions (FR-11). Single entry point:
+- `executePath(bytes32[] commands, bytes[] state)` -- payable, Router-only
+
+Rotating the Router means deploying a new executor bound to it.
 
 The Router owns pulls, fees, slippage verification, and recipient transfers, and enforces the `nonReentrant` boundary. `receive()` and `fallback()` stay payable so the Router can forward native ETH and Weiroll sub-calls (e.g. WETH unwraps) can return it. Native ETH is represented by sentinel address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`.
 

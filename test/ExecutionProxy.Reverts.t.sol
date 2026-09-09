@@ -34,7 +34,7 @@ contract ExecutionProxyRevertsTest is Test {
     uint256 internal constant MAX_GAS_MULTIPLE_OF_BASELINE = 2;
 
     function setUp() public {
-        proxy = new ExecutionProxy();
+        proxy = new ExecutionProxy(address(this));
         target = new RevertingTarget();
     }
 

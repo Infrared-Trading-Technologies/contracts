@@ -157,8 +157,8 @@ contract RouterTest is Test {
     event ExecutorUpdated(address previousExecutor, address newExecutor);
 
     function setUp() public {
-        executor = new ExecutionProxy();
         router = new Router(address(this), liquidator);
+        executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
 
@@ -509,7 +509,7 @@ contract RouterTest is Test {
         assertEq(router.pendingExecutor(), address(0), "initial pending");
 
         // Non-owner cannot propose a new executor.
-        ExecutionProxy newExec = new ExecutionProxy();
+        ExecutionProxy newExec = new ExecutionProxy(address(router));
         vm.prank(user);
         vm.expectRevert();
         router.setPendingExecutor(address(newExec));

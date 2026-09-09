@@ -92,8 +92,8 @@ contract RouterFeesTest is Test {
     );
 
     function setUp() public {
-        executor = new ExecutionProxy();
         router = new Router(address(this), liquidator);
+        executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
 

@@ -151,7 +151,7 @@ contract ExecutionProxyTest is Test {
         tokenC = new MockERC20("Token C", "TKNC", 6);
         dex = new MockDEX();
 
-        proxy = new ExecutionProxy();
+        proxy = new ExecutionProxy(address(this));
 
         vm.deal(user, 100 ether);
     }
@@ -161,8 +161,56 @@ contract ExecutionProxyTest is Test {
     // ============================================================
 
     function test_Deploy() public view {
-        // Pure-VM executor: no owner, no fee state, no storage.
+        // Minimal executor: no owner, no fee state; the only storage is the immutable Router.
         assertEq(address(proxy).code.length > 0, true);
+        assertEq(proxy.ROUTER(), address(this), "bound to the deploying Router (this test)");
+    }
+
+    function test_Constructor_ZeroRouterReverts() public {
+        vm.expectRevert(ExecutionProxy.ZeroRouter.selector);
+        new ExecutionProxy(address(0));
+    }
+
+    // ============================================================
+    // executePath: Router-only (Nethermind NM-1048)
+    // ============================================================
+
+    /// @notice Any caller other than the bound Router is rejected before the program runs.
+    function test_ExecutePath_RevertsForNonRouter() public {
+        address attacker = makeAddr("attacker");
+        bytes32[] memory commands = new bytes32[](0);
+        bytes[] memory state = new bytes[](0);
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(ExecutionProxy.NotRouter.selector, attacker));
+        proxy.executePath(commands, state);
+    }
+
+    /// @notice Funds that sit on the executor outside a swap cannot be swept by a third party
+    ///         with a `balanceOf` + `transfer` program: the entry point is Router-only.
+    function test_ExecutePath_ParkedFundsCannotBeSweptByThirdParty() public {
+        address attacker = makeAddr("attacker");
+        uint256 parked = 1000e18;
+        tokenA.mint(address(proxy), parked);
+        vm.deal(address(proxy), 1 ether);
+
+        bytes[] memory state = new bytes[](2);
+        state[0] = WeirollTestHelper.encodeAddress(attacker);
+        state[1] = WeirollTestHelper.encodeUint256(parked);
+        bytes32[] memory commands = new bytes32[](1);
+        commands[0] = WeirollTestHelper.buildTransferCommand(address(tokenA), 0, 1);
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(ExecutionProxy.NotRouter.selector, attacker));
+        proxy.executePath(commands, state);
+
+        assertEq(tokenA.balanceOf(address(proxy)), parked, "parked tokens untouched");
+        assertEq(address(proxy).balance, 1 ether, "parked ETH untouched");
+        assertEq(tokenA.balanceOf(attacker), 0, "attacker got nothing");
+
+        // The same program still works when the Router (this test) drives it.
+        proxy.executePath(commands, state);
+        assertEq(tokenA.balanceOf(attacker), parked, "Router-driven program executes");
     }
 
     // ============================================================

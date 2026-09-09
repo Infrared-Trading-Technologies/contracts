@@ -135,8 +135,8 @@ contract RouterPermit2Test is Test {
             vm.parseJsonBytes(vm.readFile("out/Permit2.sol/Permit2.json"), ".deployedBytecode.object");
         vm.etch(PERMIT2_ADDR, deployed);
 
-        executor = new ExecutionProxy();
         router = new Router(address(this), liquidator);
+        executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
 
