@@ -305,8 +305,10 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     /// @dev Pull `amount` of `token` from the caller into the Router and return the balance delta
     ///      actually received. For native ETH the caller has already forwarded the amount via
     ///      `msg.value` (validated in `_validateSwap`), so `amount` is returned unchanged. For
-    ///      ERC20s the before/after measurement lets fee-on-transfer tokens flow through the rest
-    ///      of the swap using their post-fee amount (FR-15).
+    ///      ERC20s the before/after measurement ensures fees are computed on what the Router
+    ///      actually holds, never on the caller-declared amount. Fee-on-transfer tokens are NOT
+    ///      supported: recipes encode exact amounts, so a transfer that delivers less than
+    ///      `amount` reverts at the venue rather than settling incorrectly.
     function _pullInput(address token, uint256 amount) internal returns (uint256 pulled) {
         if (token == NATIVE_ETH_SENTINEL) {
             return amount;
@@ -545,8 +547,8 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @dev Pull `amount` of `token` from `msg.sender` into the Router via Permit2 and return
-    ///      the balance delta actually received. Mirrors `_pullInput` semantics for fee-on-
-    ///      transfer tokens (FR-15). Reverts `NativeInputNotPermit2Compatible` if `token` is
+    ///      the balance delta actually received. Mirrors `_pullInput` semantics; fee-on-transfer
+    ///      tokens are NOT supported. Reverts `NativeInputNotPermit2Compatible` if `token` is
     ///      the native ETH sentinel. The user's signature must commit to `(token, amount,
     ///      permit.nonce, permit.deadline)`; a tampered amount triggers `InvalidSigner` from
     ///      Permit2.

@@ -243,9 +243,10 @@ contract RouterAdversarialTest is Test {
     // FR-15: fee-on-transfer on input
     // ==================================================================
 
-    /// @notice FeeOnTransferToken as input. Router's balance-diff must reflect the post-burn
-    ///         amount; fees are computed off the measured `pulled`, not the caller-declared
-    ///         `inputAmount`. Protocol fee retained by Router equals `pulled * bps / 10000`,
+    /// @notice FeeOnTransferToken as input. Fee-on-transfer tokens are unsupported; this test
+    ///         documents the Router's accounting behavior when one is pulled, not a support
+    ///         guarantee. Router's balance-diff must reflect the post-burn amount; fees are
+    ///         computed off the measured `pulled`, not the caller-declared `inputAmount`. Protocol fee retained by Router equals `pulled * bps / 10000`,
     ///         proving the off-`pulled` computation (an `inputAmount`-based computation would
     ///         yield a larger retained balance). The executor receives the forwarded amount
     ///         minus the second 1% burn incurred on the Router -> executor transfer.

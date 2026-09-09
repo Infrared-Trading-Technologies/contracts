@@ -493,7 +493,8 @@ contract RouterPermit2Test is Test {
     }
 
     // ---------------------------------------------------------------
-    // 8. Fee-on-transfer token: pulled < signed; fee math uses pulled
+    // 8. Fee-on-transfer token: pulled < signed; fee math uses pulled.
+    //    FoT tokens are unsupported; this documents accounting behavior only.
     // ---------------------------------------------------------------
 
     function test_SwapPermit2_FeeOnTransferToken() public {
