@@ -18,8 +18,17 @@ abstract contract VM {
 
     uint256 constant SHORT_COMMAND_FILL = 0x000000000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
 
+    /// @dev Selector of the compiler's `Error(string)` revert payload.
+    bytes4 constant ERROR_STRING_SELECTOR = 0x08c379a0;
+
     address immutable self;
 
+    /// @notice A command's sub-call reverted with a well-formed `Error(string)` payload
+    ///         (`message` is that string) or with no payload at all (`message` is "Unknown").
+    ///         Any other revert payload (custom errors, `Panic(uint256)`, malformed data) is
+    ///         bubbled up unchanged instead, so callers can decode it.
+    /// @param command_index Position in `commands[]` of the failing command's first word.
+    /// @param target        Address the failing command called.
     error ExecutionFailed(uint256 command_index, address target, string message);
 
     constructor() {
@@ -36,6 +45,9 @@ abstract contract VM {
 
         uint256 commandsLength = commands.length;
         for (uint256 i; i < commandsLength;) {
+            // Index of this command's first word, reported on failure. `i` itself moves on
+            // to the indices word for extended commands.
+            uint256 commandIndex = i;
             command = commands[i];
             flags = uint256(uint8(bytes1(command << 32)));
 
@@ -96,16 +108,7 @@ abstract contract VM {
             }
 
             if (!success) {
-                if (outdata.length > 0) {
-                    assembly {
-                        outdata := add(outdata, 68)
-                    }
-                }
-                revert ExecutionFailed({
-                    command_index: 0,
-                    target: address(uint160(uint256(command))),
-                    message: outdata.length > 0 ? string(outdata) : "Unknown"
-                });
+                _revertFailedCommand(commandIndex, address(uint160(uint256(command))), outdata);
             }
 
             if (flags & FLAG_TUPLE_RETURN != 0) {
@@ -118,5 +121,36 @@ abstract contract VM {
             }
         }
         return state;
+    }
+
+    /// @dev Surfaces a failed sub-call. Only a payload that is provably a well-formed
+    ///      `Error(string)` (selector, 68-byte header, in-place offset, length within bounds)
+    ///      is unwrapped into `ExecutionFailed`; empty revert data maps to "Unknown". Anything
+    ///      else is re-raised byte-for-byte: reinterpreting it as a string would read the
+    ///      second word of a two-argument custom error as a length and either corrupt the
+    ///      message or expand memory until the transaction runs out of gas.
+    function _revertFailedCommand(uint256 commandIndex, address target, bytes memory outdata) private pure {
+        uint256 len = outdata.length;
+        if (len == 0) {
+            revert ExecutionFailed({ command_index: commandIndex, target: target, message: "Unknown" });
+        }
+        if (len >= 68 && bytes4(outdata) == ERROR_STRING_SELECTOR) {
+            uint256 offset;
+            uint256 strLen;
+            assembly {
+                offset := mload(add(outdata, 36))
+                strLen := mload(add(outdata, 68))
+            }
+            if (offset == 0x20 && strLen <= len - 68) {
+                // Point at the string's own length word; the bytes that follow are the string.
+                assembly {
+                    outdata := add(outdata, 68)
+                }
+                revert ExecutionFailed({ command_index: commandIndex, target: target, message: string(outdata) });
+            }
+        }
+        assembly {
+            revert(add(outdata, 32), len)
+        }
     }
 }

@@ -60,9 +60,10 @@ contract DeployCreate3 is Script {
     // (extended-command decoder, dispatcher, flag layout, FLAG_DATA, etc.). Its
     // salt is pinned to a namespace independent of `SALT_VERSION` so each fixed
     // bytecode lands at a fresh CREATE3 address while Router and helper
-    // deployments stay on their existing v1 addresses. Current bump: .v2 -> .v3
-    // accompanies FLAG_DATA dispatcher support (spec 00001).
-    string public constant EXECUTION_PROXY_SALT_NAMESPACE = "infrared.contracts.executionproxy.v3";
+    // deployments stay on their existing v1 addresses. Current bump: .v3 -> .v4
+    // accompanies the revert-data classification fix in VM._execute
+    // (Nethermind NM-1048); .v2 -> .v3 landed FLAG_DATA dispatcher support.
+    string public constant EXECUTION_PROXY_SALT_NAMESPACE = "infrared.contracts.executionproxy.v4";
 
     // UniswapV4SwapHelpers bytecode changes when its embedded V4 struct layout
     // must follow Uniswap v4-periphery / Universal Router upgrades, or when its
