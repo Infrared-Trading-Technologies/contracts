@@ -142,8 +142,14 @@ contract DeployCreate3 is Script {
     ///      UniswapV4SwapHelpers on that chain (testnets currently).
     ///
     ///      Adding a new chain: add a `block.chainid` arm below with the
-    ///      verified UR address from Uniswap's deployments page. No
-    ///      chains.json edit needed.
+    ///      verified UR address from Uniswap's deployments page, then add a
+    ///      matching `test_Layout_<Chain>` arm in
+    ///      test/weiroll-helpers/UniswapV4SwapHelpers.fork.t.sol and
+    ///      deploy.sh `check_v4_layout`. That fork test proves the helper's
+    ///      locally reproduced `ExactInputSingleParams` layout matches the
+    ///      pinned router's V4Router decoder (Nethermind NM-1048); deploy
+    ///      and dry-run refuse to proceed until it passes. No chains.json
+    ///      edit needed.
     function getUniversalRouter() public view returns (address) {
         try vm.envAddress("UNIVERSAL_ROUTER") returns (address ur) {
             require(ur != address(0), "UNIVERSAL_ROUTER is zero");
