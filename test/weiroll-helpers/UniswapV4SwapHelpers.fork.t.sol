@@ -18,8 +18,10 @@ import {
 ///         `minHopPriceX36` field the decode shifts the `bytes hookData`
 ///         offset and the swap reverts inside `unlockCallback`.
 ///
-///         Requires `MAINNET_RPC_URL` (or any env var Foundry's
-///         `vm.envOr` accepts via `--fork-url`).
+///         Forks Ethereum mainnet from `ETH_RPC_URL` (fallback:
+///         `MAINNET_RPC_URL`). When neither is set (e.g. CI without RPC
+///         secrets) every test in this contract is skipped rather than
+///         failing in setUp.
 contract UniswapV4SwapHelpersForkTest is Test {
     // Canonical mainnet addresses
     address internal constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
@@ -31,6 +33,16 @@ contract UniswapV4SwapHelpersForkTest is Test {
     address internal taker;
 
     function setUp() public {
+        // ETH_RPC_URL is the repo convention (chains.json / deploy.sh);
+        // MAINNET_RPC_URL is accepted as a fallback.
+        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string(""));
+        if (bytes(rpcUrl).length == 0) rpcUrl = vm.envOr("MAINNET_RPC_URL", string(""));
+        if (bytes(rpcUrl).length == 0) {
+            vm.skip(true);
+            return;
+        }
+        vm.createSelectFork(rpcUrl);
+
         // Deploy a fresh helper at a non-canonical address against the
         // canonical UR 2.1.1 and Permit2 singletons. The CREATE3 address
         // does not matter for this test -- only the deployed bytecode
