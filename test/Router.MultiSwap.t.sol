@@ -753,6 +753,44 @@ contract RouterMultiSwapTest is Test {
         assertEq(tokenD.balanceOf(receiver), producedD, "receiver D");
     }
 
+    /// @notice Nethermind NM-1048 [Low], multi-swap mirror: an outputMins[j] above
+    ///         `outputQuotes[j] - fee(outputQuotes[j])` with the output-side partner fee and
+    ///         capture on is rejected at validation, before any input is pulled.
+    function test_MultiSwap_PartnerFeeOutput_UnreachableOutputMin_Reverts() public {
+        uint256 amtA = 1000e18;
+        uint256 amtB = 500e18;
+        tokenA.mint(user, amtA);
+        tokenB.mint(user, amtB);
+        vm.startPrank(user);
+        tokenA.approve(address(router), amtA);
+        tokenB.approve(address(router), amtB);
+        vm.stopPrank();
+
+        address[] memory inputs = new address[](2);
+        inputs[0] = address(tokenA);
+        inputs[1] = address(tokenB);
+        address[] memory outputs = new address[](2);
+        outputs[0] = address(tokenC);
+        outputs[1] = address(tokenD);
+        // Output 1: quote 500e18, 100 bps output fee -> ceiling 495e18; min 496e18 is unreachable.
+        uint256[] memory quotes = _arr2(1000e18, 500e18);
+        uint256[] memory mins = _arr2(900e18, 496e18);
+
+        (bytes32[] memory commands, bytes[] memory state) = _build2In2OutSwapProgram(
+            address(tokenA), address(tokenB), amtA, amtB, address(tokenC), address(tokenD), 1000e18, 500e18
+        );
+        Router.MultiSwapParams memory p = _mkParams(inputs, _arr2(amtA, amtB), outputs, quotes, mins, commands, state);
+        p.partnerFeeBps = 100;
+        p.partnerFeeOnOutput = true;
+        p.partnerRecipient = alice;
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(Router.OutputMinUnreachable.selector, uint256(496e18), uint256(495e18)));
+        router.swapMulti(p);
+        assertEq(tokenA.balanceOf(user), amtA, "nothing pulled");
+        assertEq(tokenB.balanceOf(user), amtB, "nothing pulled");
+    }
+
     /// @notice One of M outputs falls below its outputMin -> entire tx reverts SlippageExceeded
     ///         with the offending output token, the produced amount, and the per-output min.
     ///         Atomicity: even though output[0] would have passed its own min, the whole swap is

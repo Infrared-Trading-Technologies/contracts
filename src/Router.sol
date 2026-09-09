@@ -39,7 +39,7 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     // -------------------------------------------------------------------------
     // Errors
     //
-    // The eighteen errors below are contract-scoped so external callers (tests,
+    // The nineteen errors below are contract-scoped so external callers (tests,
     // off-chain consumers) can reference them as `Router.ErrorName.selector`.
     // `Paused` lives in the `RouterErrors` library above to avoid the event/error
     // identifier collision documented on that library.
@@ -49,6 +49,10 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     error ZeroOutputQuote();
     error ZeroOutputMin();
     error InvalidSlippageBounds();
+    /// @dev `outputMin` exceeds the most the user can ever be credited: with positive-slippage
+    ///      capture on, the output is capped at `outputQuote` before the output-side partner
+    ///      fee is deducted, so anything above `outputQuote - fee(outputQuote)` is unreachable.
+    error OutputMinUnreachable(uint256 outputMin, uint256 maxReachable);
     error SelfSwap();
     error ProtocolFeeExceedsCap(uint256 bps);
     error PartnerFeeExceedsCap(uint256 bps);
@@ -94,6 +98,12 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Parameters for a single-input, single-output swap. Assembled by the backend
     ///         quoting engine and passed verbatim to `swap`.
+    /// @dev Output semantics: `outputQuote` is the gross quoted output, the ceiling at which
+    ///      positive slippage is captured when `passPositiveSlippageToUser` is false and the
+    ///      base on which an output-side partner fee is charged. `outputMin` is the net floor:
+    ///      the least the user must actually be credited after that fee. Validation rejects an
+    ///      `outputMin` above `outputQuote - fee(outputQuote)` when both the cap and the
+    ///      output-side fee are active, since settlement could never satisfy it.
     struct SwapParams {
         address inputToken;
         uint256 inputAmount;
@@ -123,6 +133,8 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Parameters for an atomic multi-input, multi-output swap.
+    /// @dev `outputQuotes[j]` / `outputMins[j]` carry the same gross-ceiling / net-floor
+    ///      semantics as `SwapParams.outputQuote` / `outputMin`, per output.
     struct MultiSwapParams {
         address[] inputTokens;
         uint256[] inputAmounts;
@@ -316,6 +328,24 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
         if (p.protocolFeeBps > MAX_PROTOCOL_FEE_BPS) revert ProtocolFeeExceedsCap(p.protocolFeeBps);
         if (p.partnerFeeBps > MAX_PARTNER_FEE_BPS) revert PartnerFeeExceedsCap(p.partnerFeeBps);
         if (p.partnerFeeBps > 0 && p.partnerRecipient == address(0)) revert InvalidPartnerRecipient();
+        uint256 maxReachable =
+            _maxReachableOutput(p.outputQuote, p.partnerFeeBps, p.partnerFeeOnOutput, p.passPositiveSlippageToUser);
+        if (p.outputMin > maxReachable) revert OutputMinUnreachable(p.outputMin, maxReachable);
+    }
+
+    /// @dev The most a user can be credited for one output. With positive-slippage capture on,
+    ///      settlement caps the realized amount at `outputQuote` and then deducts the output-side
+    ///      partner fee from the capped amount, so the ceiling is `outputQuote - fee(outputQuote)`.
+    ///      With pass-through on, or no output-side fee, the ceiling is `outputQuote` itself
+    ///      (validation already requires `outputMin <= outputQuote`). Mirrors the fee arithmetic
+    ///      in `_executeSwap` / `_settleOutputs` exactly, including flooring.
+    function _maxReachableOutput(uint256 outputQuote, uint16 partnerFeeBps, bool partnerFeeOnOutput, bool passSlippage)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (passSlippage || !partnerFeeOnOutput || partnerFeeBps == 0) return outputQuote;
+        return outputQuote - (outputQuote * partnerFeeBps) / 10_000;
     }
 
     /// @dev Full validation for the user-facing `swap` entry point: common checks plus the
@@ -511,6 +541,10 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
             if (p.outputQuotes[j] == 0) revert ZeroOutputQuote();
             if (p.outputMins[j] == 0) revert ZeroOutputMin();
             if (p.outputMins[j] > p.outputQuotes[j]) revert InvalidSlippageBounds();
+            uint256 maxReachable = _maxReachableOutput(
+                p.outputQuotes[j], p.partnerFeeBps, p.partnerFeeOnOutput, p.passPositiveSlippageToUser
+            );
+            if (p.outputMins[j] > maxReachable) revert OutputMinUnreachable(p.outputMins[j], maxReachable);
         }
 
         _requireNoDuplicates(p.inputTokens);
