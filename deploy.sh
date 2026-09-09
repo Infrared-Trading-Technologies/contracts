@@ -208,11 +208,11 @@ generate_registry() {
     while IFS= read -r contract; do
         # ExecutionProxy uses a pinned namespace independent of SALT_VERSION;
         # see DeployCreate3.s.sol EXECUTION_PROXY_SALT_NAMESPACE. Its bytecode
-        # changes with each VM dispatcher fix; current bump .v2 -> .v3 lands
-        # FLAG_DATA support (spec 00001-CHORE-vm-flag-data).
+        # changes with each VM fix; current bump .v3 -> .v4 lands the
+        # revert-data classification fix (Nethermind NM-1048).
         local packed
         if [[ "$contract" == "ExecutionProxy" ]]; then
-            packed="infrared.contracts.executionproxy.v3"
+            packed="infrared.contracts.executionproxy.v4"
         else
             packed="infrared.contracts.${salt_version}${contract}"
         fi
