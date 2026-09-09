@@ -65,10 +65,12 @@ contract DeployCreate3 is Script {
     string public constant EXECUTION_PROXY_SALT_NAMESPACE = "infrared.contracts.executionproxy.v3";
 
     // UniswapV4SwapHelpers bytecode changes when its embedded V4 struct layout
-    // must follow Uniswap v4-periphery / Universal Router upgrades. Pinned to
-    // its own namespace so a redeploy lands at a fresh CREATE3 address while
-    // all other Router-stack contracts keep their addresses.
-    string public constant UNISWAP_V4_SWAP_HELPERS_SALT_NAMESPACE = "infrared.contracts.uniswapv4swaphelpers.v2";
+    // must follow Uniswap v4-periphery / Universal Router upgrades, or when its
+    // accounting changes. Pinned to its own namespace so a redeploy lands at a
+    // fresh CREATE3 address while all other Router-stack contracts keep their
+    // addresses. Current bump: .v2 -> .v3 accompanies the balance-delta output
+    // accounting (Nethermind NM-1048).
+    string public constant UNISWAP_V4_SWAP_HELPERS_SALT_NAMESPACE = "infrared.contracts.uniswapv4swaphelpers.v3";
 
     // CREATE3 proxy bytecode hash (from solmate/ZeframLou CREATE3). Used to predict the deployed
     // address locally when no RPC is available (e.g. CI-less preview).

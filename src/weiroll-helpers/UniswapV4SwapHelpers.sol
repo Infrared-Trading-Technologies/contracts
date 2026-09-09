@@ -76,9 +76,10 @@ struct ExactInputSingleParams {
  *                                                  │    caller, this, amountIn)
  *                                                  ├─ ERC20.forceApprove(Permit2)
  *                                                  ├─ Permit2.approve(UR, amount, type(uint48).max)
+ *                                                  ├─ before = balanceOf(tokenOut, this)
  *                                                  ├─ UR.execute{value: msg.value}(
  *                                                  │    V4_SWAP commands, [blob], deadline)
- *                                                  ├─ amountOut = IERC20(tokenOut).balanceOf(this)
+ *                                                  ├─ amountOut = balanceOf(tokenOut, this) - before
  *                                                  ├─ revert if amountOut < minAmountOut
  *                                                  └─ IERC20.safeTransfer(receiver, amountOut)
  *
@@ -87,9 +88,14 @@ struct ExactInputSingleParams {
  *      it via UR.execute{value: msg.value}. The Permit2 dance is
  *      skipped on the native-input leg.
  *
- *      This contract holds no persistent state — tokens flow through
- *      the same call frame they entered in. Approvals to Permit2 are
- *      reset every swap via forceApprove, not left dangling at max.
+ *      This contract is designed to hold no state between calls — tokens
+ *      flow through the same call frame they entered in. That is not
+ *      enforced on inbound transfers (anyone can send tokens or ETH
+ *      here), so the realized output is measured as the pre/post
+ *      balance delta across the Universal Router call. Any balance the
+ *      contract already held is neither credited to the caller nor paid
+ *      to `receiver`. Approvals to Permit2 are reset every swap via
+ *      forceApprove, not left dangling at max.
  *
  *      Fee-on-transfer tokens are NOT supported. SETTLE_ALL opens a debt
  *      for exactly `amountIn`; a token that delivers less than that to
@@ -102,7 +108,7 @@ contract UniswapV4SwapHelpers {
     /// @dev Bumps when the contract's external surface changes. Mirror
     ///      of MathHelpers.VERSION — gives operators a one-call way to
     ///      assert they're talking to the expected revision.
-    uint256 public constant VERSION = 2;
+    uint256 public constant VERSION = 3;
 
     /// @dev Universal Router command byte for a V4 swap (per Uniswap
     ///      Commands library).
@@ -141,9 +147,11 @@ contract UniswapV4SwapHelpers {
     /**
      * @notice Executes a V4 exact-input single-pool swap and returns the
      *         realized output amount in `tokenOut` (the non-zeroForOne
-     *         currency of poolKey). The realized output is observed by
-     *         this contract's own post-swap balanceOf, so the caller does
-     *         not need to bracket the call with pre/post reads.
+     *         currency of poolKey). The realized output is the change in
+     *         this contract's `tokenOut` balance across the Universal
+     *         Router call, so the caller does not need to bracket the
+     *         call with pre/post reads and a pre-existing balance is
+     *         never counted as output.
      *
      * @param poolKey         V4 pool identity (currency0, currency1, fee,
      *                        tickSpacing, hooks).
@@ -223,17 +231,18 @@ contract UniswapV4SwapHelpers {
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(actions, params);
 
+        // Snapshot the output-side balance before the swap so only what
+        // the Universal Router actually delivers is credited. currencyIn
+        // and currencyOut are distinct, so when currencyOut is native the
+        // ERC-20 input leg contributes no msg.value to this snapshot.
+        uint256 balanceBefore = _balanceOfSelf(currencyOut);
+
         UNIVERSAL_ROUTER.execute{ value: msg.value }(commands, inputs, deadline);
 
-        // Observe realized output on the helper's own balance. This
-        // works for both native and ERC-20 outputs: V4's TAKE_ALL
-        // delivers to this contract (which is msg.sender from UR's
-        // perspective), then we forward to `receiver`.
-        if (currencyOut == address(0)) {
-            amountOut = address(this).balance;
-        } else {
-            amountOut = IERC20(currencyOut).balanceOf(address(this));
-        }
+        // V4's TAKE_ALL delivers to this contract (msg.sender from UR's
+        // perspective). Credit the delta only; anything the contract held
+        // beforehand stays untouched and is never paid to `receiver`.
+        amountOut = _balanceOfSelf(currencyOut) - balanceBefore;
         if (amountOut < minAmountOut) {
             revert InsufficientOutputAmount(amountOut, minAmountOut);
         }
@@ -244,6 +253,13 @@ contract UniswapV4SwapHelpers {
         } else {
             IERC20(currencyOut).safeTransfer(receiver, amountOut);
         }
+    }
+
+    /// @dev Balance of `currency` held by this contract; address(0) is
+    ///      native ETH per V4's Currency convention.
+    function _balanceOfSelf(address currency) private view returns (uint256) {
+        if (currency == address(0)) return address(this).balance;
+        return IERC20(currency).balanceOf(address(this));
     }
 
     /// @dev Resets the Permit2 path for `token`: helper grants Permit2
