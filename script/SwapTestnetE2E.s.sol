@@ -7,6 +7,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import { Router } from "../src/Router.sol";
 import { WeirollTestHelper } from "../test/helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "../test/helpers/RouterAuth.sol";
 import { UniV3SwapHelper } from "./lib/UniV3SwapHelper.sol";
 import { SwapE2EAssert } from "./lib/SwapE2EAssert.sol";
 
@@ -54,14 +55,21 @@ contract SwapTestnetE2E is Script {
         address uniRouter;
         address helper;
         address deployer;
+        uint256 signerPk;
     }
+
+    /// @dev Every leg carries the backend authorization the Router now requires (NM-1048).
+    ///      Signed with `TESTNET_SIGNER_PRIVATE_KEY`, the testnet-only signer the Router was
+    ///      deployed with (`ROUTER_SIGNER_<CHAINID>`); the production signer key never leaves
+    ///      Secret Manager and is never used by this script.
+    uint256 internal constant AUTH_TTL = 30 minutes;
 
     /// @notice Sole entry point. Mainnet ids are rejected before any state read.
     /// @dev    Both the broadcast and the Permit2 EIP-712 signature are sourced from the
     ///         `--account` keystore the script is launched with. `vm.broadcast()` (no
     ///         arg) uses that keystore for tx signing; `vm.sign(deployer, digest)`
-    ///         uses the same keystore for the EIP-712 digest (`Vm.sol:455`). No raw
-    ///         private key is read from env — the keystore password is entered once.
+    ///         uses the same keystore for the EIP-712 digest (`Vm.sol:455`). The only raw
+    ///         key read from env is the testnet backend signer (`TESTNET_SIGNER_PRIVATE_KEY`).
     function run(uint256 chainId) external {
         if (chainId == 1 || chainId == 8453) revert("script reverts: mainnet ids rejected; testnet only");
         if (chainId != 11155111 && chainId != 84532) revert("script reverts: chainid unsupported");
@@ -105,6 +113,24 @@ contract SwapTestnetE2E is Script {
         // existing deploy harness already exports (see `.env.example` and `deploy.sh`).
         c.deployer = vm.envAddress("DEPLOYER_ADDRESS");
         if (c.deployer == address(0)) revert("script reverts: DEPLOYER_ADDRESS env required");
+
+        c.signerPk = vm.envUint("TESTNET_SIGNER_PRIVATE_KEY");
+        if (c.signerPk == 0) revert("script reverts: TESTNET_SIGNER_PRIVATE_KEY env required");
+        address signer = vm.addr(c.signerPk);
+        if (Router(payable(c.router)).signer() != signer) {
+            revert("script reverts: TESTNET_SIGNER_PRIVATE_KEY does not match Router.signer()");
+        }
+    }
+
+    /// @dev Backend-style authorization for one leg: fresh nonce per leg, `AUTH_TTL` expiry,
+    ///      taker = the broadcasting deployer (the Router binds `msg.sender`).
+    function _authorize(Ctx memory c, Router.SwapParams memory params, string memory leg)
+        internal
+        view
+        returns (Router.Authorization memory)
+    {
+        bytes32 nonce = keccak256(abi.encode(leg, block.timestamp, c.deployer));
+        return RouterAuth.authorizeSwap(c.router, c.signerPk, params, c.deployer, nonce, block.timestamp + AUTH_TTL);
     }
 
     // -------------------------------------------------------------------------
@@ -122,7 +148,7 @@ contract SwapTestnetE2E is Script {
 
         vm.recordLogs();
         vm.broadcast();
-        Router(payable(c.router)).swap(params);
+        Router(payable(c.router)).swap(params, _authorize(c, params, "leg1"));
 
         SwapE2EAssert.SwapEvent memory ev = SwapE2EAssert.findSwap(vm.getRecordedLogs(), c.router);
         SwapE2EAssert.baseAssert(ev, params);
@@ -178,7 +204,7 @@ contract SwapTestnetE2E is Script {
 
         vm.recordLogs();
         vm.broadcast();
-        Router(payable(c.router)).swap{ value: LEG_INPUT_AMOUNT }(params);
+        Router(payable(c.router)).swap{ value: LEG_INPUT_AMOUNT }(params, _authorize(c, params, "leg2"));
 
         SwapE2EAssert.SwapEvent memory ev = SwapE2EAssert.findSwap(vm.getRecordedLogs(), c.router);
         SwapE2EAssert.baseAssert(ev, params);
@@ -209,7 +235,7 @@ contract SwapTestnetE2E is Script {
 
         vm.recordLogs();
         vm.broadcast();
-        Router(payable(c.router)).swapPermit2(params, permit);
+        Router(payable(c.router)).swapPermit2(params, permit, _authorize(c, params, "leg3"));
 
         SwapE2EAssert.SwapEvent memory ev = SwapE2EAssert.findSwap(vm.getRecordedLogs(), c.router);
         SwapE2EAssert.baseAssert(ev, params);

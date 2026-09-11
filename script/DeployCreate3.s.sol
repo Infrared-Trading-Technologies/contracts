@@ -130,6 +130,28 @@ contract DeployCreate3 is Script {
         }
     }
 
+    /// @notice Resolves the Router's initial backend signer from env.
+    /// @dev `ROUTER_SIGNER_<CHAINID>` first, then `ROUTER_SIGNER`. No deployer fallback on any
+    ///      chain: a deployer-keystore signer would be a live signing key, and a zero signer
+    ///      leaves every swap reverting `SignerNotSet`. Mainnets and testnets are expected to use
+    ///      different keys (the testnet E2E script signs with the testnet key only). The gateway's
+    ///      `go run ./cmd/signer-address` prints the address for the key held in Secret Manager;
+    ///      the two must match or the gateway refuses to build.
+    function getRouterSigner() public view returns (address) {
+        string memory perChain = string.concat("ROUTER_SIGNER_", vm.toString(block.chainid));
+        try vm.envAddress(perChain) returns (address chainSigner) {
+            require(chainSigner != address(0), string.concat(perChain, " is the zero address"));
+            return chainSigner;
+        } catch {
+            try vm.envAddress("ROUTER_SIGNER") returns (address signer) {
+                require(signer != address(0), "ROUTER_SIGNER is the zero address");
+                return signer;
+            } catch {
+                revert(string.concat("ROUTER_SIGNER (or ", perChain, ") env required"));
+            }
+        }
+    }
+
     /// @notice Resolves the chain's Universal Router address.
     /// @dev UR is deployed per chain by Uniswap at chain-specific
     ///      addresses (NOT a CREATE3 singleton). For mainnets we hardcode
@@ -283,6 +305,7 @@ contract DeployCreate3 is Script {
         address deployer = msg.sender;
         address routerOwner = getRouterOwner();
         address routerLiquidator = getRouterLiquidator();
+        address routerSigner = getRouterSigner();
         string memory saltVersion = getSaltVersion();
 
         console2.log("Deploying contracts...");
@@ -293,6 +316,7 @@ contract DeployCreate3 is Script {
             console2.log("  (Router ownership set to provided multisig; acceptExecutor() must come from owner)");
         }
         console2.log("Router liquidator:", routerLiquidator);
+        console2.log("Router signer:", routerSigner);
         console2.log("Salt version:", saltVersion);
         console2.log("CREATE3 Factory:", CREATE3_FACTORY);
         console2.log("");
@@ -301,9 +325,11 @@ contract DeployCreate3 is Script {
 
         vm.startBroadcast();
 
-        // Deploy Router with (owner, liquidator) constructor args. Router holds user approvals
-        // and the entire fee / slippage model; ExecutionProxy is forwarded funds + commands on each call.
-        bytes memory routerCode = abi.encodePacked(type(Router).creationCode, abi.encode(routerOwner, routerLiquidator));
+        // Deploy Router with (owner, liquidator, signer) constructor args. Router holds user
+        // approvals and the entire fee / slippage model and verifies the backend signer's
+        // authorization on every swap; ExecutionProxy is forwarded funds + commands on each call.
+        bytes memory routerCode =
+            abi.encodePacked(type(Router).creationCode, abi.encode(routerOwner, routerLiquidator, routerSigner));
         (result.router, result.routerDeployed) = deployIfNeeded(getSalt(ROUTER), routerCode, ROUTER);
         result.deployed[1] = result.routerDeployed;
 
@@ -389,6 +415,7 @@ contract DeployCreate3 is Script {
         console2.log("Newly deployed:", newlyDeployed);
         console2.log("Already deployed:", 10 - newlyDeployed);
         console2.log("Router owner:", routerOwner);
+        console2.log("Router signer:", Router(payable(result.router)).signer());
         console2.log("");
         console2.log("[REMINDER] acceptExecutor() must be invoked by the Router owner multisig");
         console2.log("           in a follow-up transaction before the Router can serve swaps.");
@@ -401,6 +428,7 @@ contract DeployCreate3 is Script {
         address deployer = msg.sender;
         address routerOwner = getRouterOwner();
         address routerLiquidator = getRouterLiquidator();
+        address routerSigner = getRouterSigner();
         string memory saltVersion = getSaltVersion();
         bool factoryAvailable = isDeployed(CREATE3_FACTORY);
 
@@ -411,6 +439,7 @@ contract DeployCreate3 is Script {
             console2.log("  (Router ownership will be set to provided multisig)");
         }
         console2.log("Router liquidator:", routerLiquidator);
+        console2.log("Router signer:", routerSigner);
         console2.log("Salt version:", saltVersion);
         console2.log("CREATE3 Factory:", CREATE3_FACTORY, factoryAvailable ? "(deployed)" : "(local-predict)");
         console2.log("");

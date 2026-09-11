@@ -37,7 +37,7 @@ Signs with a Foundry-encrypted keystore (`~/.foundry/keystores/<name>`). Create 
 
 Supported chains: Ethereum (1), Base (8453), Arbitrum One (42161), Sepolia (11155111), Base Sepolia (84532).
 
-After deploying a new chain, the Router owner multisig must wire the executor (`setPendingExecutor` + `acceptExecutor`). `./deploy.sh wire-propose <chain-id>` proposes that batch straight to the Safe Transaction Service; `./deploy.sh wire-bundle <chain-id>` writes a Safe Tx Builder JSON to import by hand instead. The chain is not live until `router.executor()` returns the ExecutionProxy address.
+`ROUTER_SIGNER` (or `ROUTER_SIGNER_<chainId>`) must be set for `deploy`/`preview`/`dry-run`; `./deploy.sh retire-propose` / `retire-verify` pause and check previous Routers after a redeploy. After deploying a new chain, the Router owner multisig must wire the executor (`setPendingExecutor` + `acceptExecutor`). `./deploy.sh wire-propose <chain-id>` proposes that batch straight to the Safe Transaction Service; `./deploy.sh wire-bundle <chain-id>` writes a Safe Tx Builder JSON to import by hand instead. The chain is not live until `router.executor()` returns the ExecutionProxy address.
 
 Both repos must agree on deployed addresses: after a deploy, populate the chain in `infrared/internal/protocol/infrared/addresses.go` (`chainAddressMap`), or `IsChainSupported` treats it as unsupported.
 
@@ -54,7 +54,7 @@ Both repos must agree on deployed addresses: after a deploy, populate the chain 
 
 Rotating the Router means deploying a new executor bound to it.
 
-The Router owns pulls, fees, slippage verification, and recipient transfers, and enforces the `nonReentrant` boundary. `receive()` and `fallback()` stay payable so the Router can forward native ETH and Weiroll sub-calls (e.g. WETH unwraps) can return it. Native ETH is represented by sentinel address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`.
+The Router owns pulls, fees, slippage verification, and recipient transfers, and enforces the `nonReentrant` boundary. Every user-facing swap (`swap`, `swapMulti`, `swapPermit2`, `swapMultiPermit2`) takes a backend-signed EIP-712 `Authorization` over the full params, `msg.sender`, a nonce and an expiry (NM-1048); the signer is owner-managed (`setSigner`, liquidator-callable `revokeSigner`) and each authorization is single-use. `test/helpers/RouterAuth.sol` is the reference hasher for tests and scripts. `receive()` and `fallback()` stay payable so the Router can forward native ETH and Weiroll sub-calls (e.g. WETH unwraps) can return it. Native ETH is represented by sentinel address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`.
 
 ### Weiroll Helpers
 

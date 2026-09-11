@@ -15,7 +15,8 @@ contract DeployScript is Script {
 
         vm.startBroadcast();
 
-        Router router = new Router(msg.sender, msg.sender);
+        // Dev only: the broadcaster is owner, liquidator and backend signer at once.
+        Router router = new Router(msg.sender, msg.sender, msg.sender);
         ExecutionProxy proxy = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(proxy));
         router.acceptExecutor();
@@ -23,6 +24,7 @@ contract DeployScript is Script {
         console2.log("Chain ID:", chainId);
         console2.log("ExecutionProxy deployed at:", address(proxy));
         console2.log("Router deployed at:", address(router));
+        console2.log("Router signer:", msg.sender);
 
         vm.stopBroadcast();
     }

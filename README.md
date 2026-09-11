@@ -6,7 +6,7 @@ Solidity contracts for the Infrared execution layer. The `Router` is the user-fa
 
 | Contract          | Description                                                                  |
 | ----------------- | ---------------------------------------------------------------------------- |
-| `Router`          | User-facing entry point: ERC20 approvals, fees, slippage; `Ownable2Step`     |
+| `Router`          | User-facing entry point: ERC20 approvals, fees, slippage; every swap needs a backend-signed EIP-712 authorization; `Ownable2Step` |
 | `ExecutionProxy`  | Weiroll VM executor; `executePath` callable only by its bound Router         |
 | `Tupler`          | Byte tuple extraction helper                                                 |
 | `Integer`         | Comparison utilities                                                         |

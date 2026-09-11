@@ -5,8 +5,9 @@ set -euo pipefail
 # Uses CREATE3 for deterministic addresses across chains.
 #
 # Contracts deployed (order defined in chains.json "contracts"):
-#   Router          -- primary user-facing contract; holds ERC20 approvals + fee/slippage model
-#   ExecutionProxy  -- pure Weiroll VM executor (stateless, no constructor)
+#   Router          -- primary user-facing contract; holds ERC20 approvals + fee/slippage model;
+#                      every swap needs a backend-signed authorization (constructor arg: signer)
+#   ExecutionProxy  -- pure Weiroll VM executor bound to the Router
 #   Tupler, Integer, Bytes32, BlockchainInfo, ArraysConverter -- stateless Weiroll helpers
 #
 # Router.executor is wired via a two-step registry:
@@ -65,6 +66,8 @@ usage() {
     echo "  verify <chain-id>      Verify deployed contracts on block explorer"
     echo "  wire-bundle <chain-id> Write Safe Tx Builder JSON for Router.executor wiring"
     echo "  wire-propose <chain-id> Propose the wiring batch to the Safe Transaction Service"
+    echo "  retire-propose <chain-id> <old-router>  Propose pause() on a previous Router to the Safe"
+    echo "  retire-verify <chain-id>  Fail unless every previous Router in the registry is paused and swept"
     echo "  list-chains            List supported chains"
     echo ""
     echo "Environment Variables (auto-loaded from .env):"
@@ -72,6 +75,8 @@ usage() {
     echo "  DEPLOYER_ADDRESS     Deployer address (printed by ./setup-deployer-wallet.sh)"
     echo "  SAFE_ADDRESS         Safe multi-sig address (required for mainnet, optional for testnet)"
     echo "  ROUTER_LIQUIDATOR    Router liquidator address (defaults to Router owner)"
+    echo "  ROUTER_SIGNER        Backend authorization signer address (required; no fallback)"
+    echo "  ROUTER_SIGNER_<ID>   Per-chain signer override, e.g. ROUTER_SIGNER_11155111 for Sepolia"
     echo "  <CHAIN>_RPC_URL      RPC URL for the target chain (e.g., ETH_RPC_URL, BASE_RPC_URL)"
     echo "  ETHERSCAN_API_KEY    Etherscan V2 API key (works across all supported chains)"
     echo "  SALT_VERSION         Salt version for CREATE3 addresses (default: v1)"
@@ -102,6 +107,27 @@ get_is_testnet() {
     local is_testnet
     is_testnet=$(jq -r ".chains[\"$chain_id\"].isTestnet // false" "$CHAINS_FILE")
     [[ "$is_testnet" == "true" ]]
+}
+
+# Resolve the Router's backend signer for a chain: ROUTER_SIGNER_<chainId> first, then
+# ROUTER_SIGNER. Fails when neither is set: the Router would deploy with a zero signer
+# (every swap reverts SignerNotSet) or, worse, a deployer fallback would turn the
+# deployer keystore into a live signing key. Mainnets and testnets should use
+# different keys; the testnet E2E script signs with the testnet key only.
+resolve_router_signer() {
+    local chain_id="$1"
+    local per_chain_var="ROUTER_SIGNER_${chain_id}"
+    local signer="${!per_chain_var:-${ROUTER_SIGNER:-}}"
+    if [[ -z "$signer" ]]; then
+        echo -e "${RED}Error: ROUTER_SIGNER (or $per_chain_var) is not set${NC}" >&2
+        echo "Set it to the backend signer address (gateway: go run ./cmd/signer-address)." >&2
+        exit 1
+    fi
+    if [[ ! "$signer" =~ ^0x[a-fA-F0-9]{40}$ || "$signer" == "0x0000000000000000000000000000000000000000" ]]; then
+        echo -e "${RED}Error: $per_chain_var / ROUTER_SIGNER must be a non-zero 0x address${NC}" >&2
+        exit 1
+    fi
+    echo "$signer"
 }
 
 # Validate Safe address format and existence on-chain
@@ -200,6 +226,14 @@ generate_registry() {
     local owner="${SAFE_ADDRESS:-$deployer}"
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local signer="${ROUTER_SIGNER_RESOLVED:-}"
+
+    # Previous Routers: every Router address this registry ever held that is not
+    # the one being written now. `retire-verify` reads this list to confirm each
+    # one is paused and swept after a redeploy (NM-1048 closure criterion).
+    local prev_router prev_routers_json
+    prev_router=$(printf '%s' "$prev_registry_json" | jq -r '.contracts.Router.address // empty')
+    prev_routers_json=$(printf '%s' "$prev_registry_json" | jq -c '.previousRouters // []')
 
     # Build contracts object from broadcast
     local contracts_json="{"
@@ -294,6 +328,20 @@ generate_registry() {
 
     contracts_json+="}"
 
+    local new_router
+    new_router=$(printf '%s' "$contracts_json" | jq -r '.Router.address // empty')
+    if [[ -z "$new_router" ]]; then
+        # Without a Router row the previousRouters bookkeeping and the post-deploy
+        # signer() check below would both run against nothing; fail instead of
+        # writing a registry that retires the live Router.
+        echo -e "${RED}Error: Router has no code at its predicted address on chain $chain_id; registry not written${NC}"
+        exit 1
+    fi
+    if [[ -n "$prev_router" && "${prev_router,,}" != "${new_router,,}" ]]; then
+        prev_routers_json=$(printf '%s' "$prev_routers_json" | jq -c --arg a "$prev_router" \
+            'if index($a) then . else . + [$a] end')
+    fi
+
     # Write registry file
     cat > "$registry_file" << EOF
 {
@@ -302,7 +350,9 @@ generate_registry() {
   "deployedAt": "$timestamp",
   "deployer": "$deployer",
   "owner": "$owner",
+  "signer": "$signer",
   "contracts": $contracts_json,
+  "previousRouters": $prev_routers_json,
   "create3Factory": "$CREATE3_FACTORY"
 }
 EOF
@@ -400,8 +450,13 @@ deploy() {
     export OWNER_ADDRESS="$owner_address"
     export ROUTER_OWNER="${ROUTER_OWNER:-$owner_address}"
     export ROUTER_LIQUIDATOR="${ROUTER_LIQUIDATOR:-$owner_address}"
+    local router_signer
+    router_signer=$(resolve_router_signer "$chain_id")
+    export ROUTER_SIGNER="$router_signer"
+    export ROUTER_SIGNER_RESOLVED="$router_signer"
     echo "Router owner: $ROUTER_OWNER"
     echo "Router liquidator: $ROUTER_LIQUIDATOR"
+    echo "Router signer: $ROUTER_SIGNER"
     echo ""
     echo -e "${YELLOW}Foundry will prompt for the keystore password before broadcasting${NC}"
 
@@ -417,6 +472,20 @@ deploy() {
     echo -e "${GREEN}Deployment complete!${NC}"
 
     generate_registry "$chain_id" "$DEPLOYER_ADDRESS" "$rpc_url"
+
+    # CREATE3 addresses do not depend on constructor args, so a wrong ROUTER_SIGNER
+    # cannot be caught by address prediction. Read the signer back from chain.
+    local deployed_router deployed_signer
+    deployed_router=$(jq -r '.contracts.Router.address // empty' "$DEPLOYMENTS_DIR/$chain_id.json")
+    if [[ -n "$deployed_router" ]]; then
+        deployed_signer=$(cast call "$deployed_router" "signer()(address)" --rpc-url "$rpc_url" 2>/dev/null || echo "")
+        if [[ "${deployed_signer,,}" != "${router_signer,,}" ]]; then
+            echo -e "${RED}Error: Router.signer() on chain is '$deployed_signer', expected '$router_signer'${NC}"
+            echo "If this Router was already deployed with another signer, the owner must call setSigner()."
+            exit 1
+        fi
+        echo -e "${GREEN}Router.signer() == $deployed_signer (verified on chain)${NC}"
+    fi
 
     # Auto-generate the Safe Tx Builder bundle for the Router.executor wiring
     # follow-up. Skipped when there's no Safe (testnet EOA-owner case) — the
@@ -437,6 +506,14 @@ deploy() {
     echo ""
     echo "Next steps:"
     echo "  1. Run '$0 verify $chain_id' to verify contracts on block explorer"
+    echo ""
+    local prev_count
+    prev_count=$(jq -r '.previousRouters | length' "$DEPLOYMENTS_DIR/$chain_id.json")
+    if [[ "$prev_count" != "0" ]]; then
+        echo -e "${YELLOW}[ACTION REQUIRED] Retire previous Router(s) once the gateway targets the new one:${NC}"
+        echo "  $0 retire-propose $chain_id <old-router>   # proposes pause() to the Safe"
+        echo "  $0 retire-verify $chain_id                 # must pass before the NM-1048 finding is closed"
+    fi
     echo ""
     echo -e "${YELLOW}[ACTION REQUIRED] Router.executor wiring${NC}"
     if [[ "$DEPLOYER_ADDRESS" == "$ROUTER_OWNER" ]]; then
@@ -482,8 +559,11 @@ preview() {
 
     export ROUTER_OWNER="${ROUTER_OWNER:-${SAFE_ADDRESS:-$DEPLOYER_ADDRESS}}"
     export ROUTER_LIQUIDATOR="${ROUTER_LIQUIDATOR:-$DEPLOYER_ADDRESS}"
+    ROUTER_SIGNER="$(resolve_router_signer "$chain_id")"
+    export ROUTER_SIGNER
     echo "Router owner: $ROUTER_OWNER"
     echo "Router liquidator: $ROUTER_LIQUIDATOR"
+    echo "Router signer: $ROUTER_SIGNER"
 
     cd "$SCRIPT_DIR"
     forge script script/DeployCreate3.s.sol:DeployCreate3 \
@@ -525,8 +605,11 @@ dry_run() {
 
     export ROUTER_OWNER="${ROUTER_OWNER:-${SAFE_ADDRESS:-$DEPLOYER_ADDRESS}}"
     export ROUTER_LIQUIDATOR="${ROUTER_LIQUIDATOR:-$DEPLOYER_ADDRESS}"
+    ROUTER_SIGNER="$(resolve_router_signer "$chain_id")"
+    export ROUTER_SIGNER
     echo "Router owner: $ROUTER_OWNER"
     echo "Router liquidator: $ROUTER_LIQUIDATOR"
+    echo "Router signer: $ROUTER_SIGNER"
     echo ""
 
     cd "$SCRIPT_DIR"
@@ -593,10 +676,16 @@ verify() {
 
     cd "$SCRIPT_DIR"
 
-    # Router constructor args are (address _owner, address _liquidator). Fall back to deployer
-    # when ROUTER_OWNER / ROUTER_LIQUIDATOR env vars are unset (matches run() default).
+    # Router constructor args are (address _owner, address _liquidator, address _signer). Fall
+    # back to the registry's owner / signer when the env vars are unset (matches run() default).
     local router_owner="${ROUTER_OWNER:-${OWNER_ADDRESS:-$(jq -r '.owner' "$registry_file")}}"
     local router_liquidator="${ROUTER_LIQUIDATOR:-$router_owner}"
+    local per_chain_signer_var="ROUTER_SIGNER_${chain_id}"
+    local router_signer="${!per_chain_signer_var:-${ROUTER_SIGNER:-$(jq -r '.signer // empty' "$registry_file")}}"
+    if [[ -z "$router_signer" ]]; then
+        echo -e "${RED}Error: Router signer unknown (set ROUTER_SIGNER or add \"signer\" to $registry_file)${NC}"
+        exit 1
+    fi
 
     # Universal Router 2.1.1 addresses, mirrored from
     # script/DeployCreate3.sol getUniversalRouter(). Needed here for the
@@ -635,12 +724,12 @@ verify() {
         # network drop).
         local verify_ok=0
         if [[ "$contract" == "Router" ]]; then
-            # Router constructor: (address owner, address liquidator)
+            # Router constructor: (address owner, address liquidator, address signer)
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
                 --etherscan-api-key "$api_key" \
-                --constructor-args "$(cast abi-encode 'constructor(address,address)' "$router_owner" "$router_liquidator")" \
+                --constructor-args "$(cast abi-encode 'constructor(address,address,address)' "$router_owner" "$router_liquidator" "$router_signer")" \
                 --watch && verify_ok=1
         elif [[ "$contract" == "UniswapV4SwapHelpers" ]]; then
             # UniswapV4SwapHelpers constructor:
@@ -991,6 +1080,207 @@ wire_propose() {
     fi
 }
 
+# Propose `pause()` on a previous Router to the Safe Transaction Service. After a
+# Router redeploy the old contract keeps accepting the old (unsigned-parameter)
+# calldata until it is paused; the NM-1048 finding is closed on chain only once
+# every previous Router is paused and swept (see retire-verify). Same signing and
+# POST plumbing as wire-propose, single call, no MultiSend.
+retire_propose() {
+    local chain_id="$1"
+    local old_router="$2"
+
+    if [[ ! "$old_router" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+        echo -e "${RED}Error: old-router must be a 0x address${NC}"
+        return 1
+    fi
+
+    local short_name
+    short_name=$(get_chain_config "$chain_id" "safeShortName")
+    if [[ -z "$short_name" ]]; then
+        echo -e "${RED}Error: no safeShortName for chain $chain_id in chains.json${NC}"
+        return 1
+    fi
+    local svc="https://api.safe.global/tx-service/$short_name/api"
+
+    local safe_addr="${SAFE_ADDRESS:-}"
+    if [[ -z "$safe_addr" ]]; then
+        echo -e "${RED}Error: SAFE_ADDRESS not set${NC}"
+        return 1
+    fi
+    local proposer="${SAFE_PROPOSER_ADDRESS:-}"
+    if [[ -z "$proposer" && -z "${SAFE_PROPOSE_DRY:-}" ]]; then
+        echo -e "${RED}Error: SAFE_PROPOSER_ADDRESS not set (must be a Safe owner)${NC}"
+        return 1
+    fi
+
+    local rpc_env rpc_url
+    rpc_env=$(get_chain_config "$chain_id" "rpcEnv")
+    check_env "$rpc_env"
+    rpc_url="${!rpc_env}"
+
+    local router_owner
+    router_owner=$(cast call "$old_router" "owner()(address)" --rpc-url "$rpc_url" 2>/dev/null || echo "")
+    if [[ "${router_owner,,}" != "${safe_addr,,}" ]]; then
+        echo -e "${RED}Error: $old_router owner is '$router_owner', not SAFE_ADDRESS${NC}"
+        return 1
+    fi
+
+    local paused
+    paused=$(cast call "$old_router" "paused()(bool)" --rpc-url "$rpc_url" 2>/dev/null || echo "")
+    if [[ "$paused" == "true" ]]; then
+        echo -e "${GREEN}$old_router is already paused on chain $chain_id -- nothing to propose${NC}"
+        return 0
+    fi
+
+    local pause_data
+    pause_data=$(cast calldata "pause()") || return 1
+
+    local chain_nonce queued_nonce nonce queue_count
+    chain_nonce=$(cast call "$safe_addr" "nonce()(uint256)" --rpc-url "$rpc_url") || return 1
+    local auth_args=()
+    if [[ -n "${SAFE_API_KEY:-}" ]]; then
+        auth_args=(-H "Authorization: Bearer $SAFE_API_KEY")
+    fi
+    local queue_json
+    queue_json=$(curl -sf "${auth_args[@]}" \
+        "$svc/v1/safes/$safe_addr/multisig-transactions/?executed=false&limit=1&ordering=-nonce" || echo "{}")
+    queued_nonce=$(printf '%s' "$queue_json" | jq -r '.results[0].nonce // empty')
+    queue_count=$(printf '%s' "$queue_json" | jq -r '.count // 0')
+    nonce="$chain_nonce"
+    if [[ -n "$queued_nonce" && "$queued_nonce" -ge "$chain_nonce" ]]; then
+        nonce=$((queued_nonce + 1))
+        echo -e "${YELLOW}Safe queue has $queue_count pending tx(s); proposing at nonce $nonce.${NC}"
+    fi
+
+    local safe_tx_hash
+    safe_tx_hash=$(cast call "$safe_addr" \
+        "getTransactionHash(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,uint256)(bytes32)" \
+        "$old_router" 0 "$pause_data" 0 0 0 0 \
+        0x0000000000000000000000000000000000000000 \
+        0x0000000000000000000000000000000000000000 \
+        "$nonce" --rpc-url "$rpc_url") || return 1
+
+    echo "Safe:        $safe_addr ($short_name)"
+    echo "Old Router:  $old_router"
+    echo "Call:        pause()"
+    echo "Nonce:       $nonce"
+    echo "SafeTxHash:  $safe_tx_hash"
+
+    if [[ -n "${SAFE_PROPOSE_DRY:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}Dry mode: skipping signature + POST.${NC}"
+        return 0
+    fi
+
+    local sig
+    if [[ -n "${SAFE_PROPOSER_LEDGER:-}" ]]; then
+        echo "Signing with Ledger (confirm on device)..."
+        sig=$(cast wallet sign --ledger "$safe_tx_hash") || return 1
+        local v=$((16#${sig:130:2} + 4))
+        sig="0x${sig:2:128}$(printf '%02x' "$v")"
+    elif [[ -n "${SAFE_PROPOSER_ACCOUNT:-}" ]]; then
+        echo "Signing with keystore '$SAFE_PROPOSER_ACCOUNT' (password prompt follows)..."
+        sig=$(cast wallet sign --no-hash --account "$SAFE_PROPOSER_ACCOUNT" "$safe_tx_hash") || return 1
+    else
+        echo -e "${RED}Error: set SAFE_PROPOSER_ACCOUNT (keystore) or SAFE_PROPOSER_LEDGER=1${NC}"
+        return 1
+    fi
+
+    local payload http_code response
+    payload=$(jq -n --arg safe "$safe_addr" --arg to "$old_router" --arg data "$pause_data" \
+        --arg hash "$safe_tx_hash" --arg sender "$proposer" --arg sig "$sig" --argjson nonce "$nonce" \
+        '{safe: $safe, to: $to, value: "0", data: $data, operation: 0,
+          gasToken: "0x0000000000000000000000000000000000000000",
+          safeTxGas: "0", baseGas: "0", gasPrice: "0",
+          refundReceiver: "0x0000000000000000000000000000000000000000",
+          nonce: $nonce, contractTransactionHash: $hash,
+          sender: $sender, signature: $sig, origin: "infrared deploy.sh retire-propose"}')
+
+    response=$(curl -s -w '\n%{http_code}' "${auth_args[@]}" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "$svc/v1/safes/$safe_addr/multisig-transactions/")
+    http_code=$(printf '%s' "$response" | tail -1)
+
+    if [[ "$http_code" == "201" || "$http_code" == "200" ]]; then
+        echo ""
+        echo -e "${GREEN}pause() proposal submitted to the Safe Transaction Service${NC}"
+        echo "  https://app.safe.global/transactions/queue?safe=$short_name:$safe_addr"
+        echo "After it executes, sweep the old Router with transferRouterFunds and run:"
+        echo "  $0 retire-verify $chain_id"
+    else
+        echo -e "${RED}Proposal failed (HTTP $http_code):${NC}"
+        printf '%s\n' "$response" | head -n -1
+        return 1
+    fi
+}
+
+# Exit non-zero until every previous Router recorded in deployments/<chain>.json is
+# paused, holds no native ETH and holds none of the tokens listed in RETIRE_TOKENS
+# (comma-separated addresses, required: every token the old Router ever held fees
+# or captured slippage in). This is the NM-1048 closure check; the backend release
+# checklist blocks on it.
+retire_verify() {
+    local chain_id="$1"
+
+    local registry_file="$DEPLOYMENTS_DIR/$chain_id.json"
+    if [[ ! -f "$registry_file" ]]; then
+        echo -e "${RED}Error: $registry_file not found${NC}"
+        return 1
+    fi
+
+    local rpc_env rpc_url
+    rpc_env=$(get_chain_config "$chain_id" "rpcEnv")
+    check_env "$rpc_env"
+    rpc_url="${!rpc_env}"
+
+    if [[ -z "${RETIRE_TOKENS:-}" ]]; then
+        echo -e "${RED}Error: RETIRE_TOKENS is not set; retire-verify would only check paused() and native ETH${NC}"
+        echo "Set RETIRE_TOKENS=<addr>,<addr>,... to every token the previous Router(s) held."
+        return 1
+    fi
+
+    local count
+    count=$(jq -r '.previousRouters | length' "$registry_file")
+    if [[ "$count" == "0" || -z "$count" || "$count" == "null" ]]; then
+        echo -e "${GREEN}No previous Routers recorded for chain $chain_id${NC}"
+        return 0
+    fi
+
+    local failed=0
+    local old_router
+    while IFS= read -r old_router; do
+        local paused eth_balance
+        paused=$(cast call "$old_router" "paused()(bool)" --rpc-url "$rpc_url" 2>/dev/null || echo "error")
+        eth_balance=$(cast balance "$old_router" --rpc-url "$rpc_url" 2>/dev/null || echo "error")
+        echo "Previous Router $old_router: paused=$paused nativeBalance=$eth_balance"
+        if [[ "$paused" != "true" ]]; then
+            echo -e "${RED}  not paused${NC}"
+            failed=1
+        fi
+        if [[ "$eth_balance" != "0" ]]; then
+            echo -e "${RED}  native ETH not swept${NC}"
+            failed=1
+        fi
+        local token
+        for token in ${RETIRE_TOKENS//,/ }; do
+            local bal
+            bal=$(cast call "$token" "balanceOf(address)(uint256)" "$old_router" --rpc-url "$rpc_url" 2>/dev/null || echo "error")
+            echo "  $token balance=$bal"
+            if [[ "$bal" != "0" ]]; then
+                echo -e "${RED}  token not swept${NC}"
+                failed=1
+            fi
+        done
+    done < <(jq -r '.previousRouters[]' "$registry_file")
+
+    if [[ $failed -ne 0 ]]; then
+        echo -e "${RED}retire-verify FAILED for chain $chain_id${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}retire-verify passed for chain $chain_id${NC}"
+}
+
 # Main
 if [[ $# -lt 1 ]]; then
     usage
@@ -1020,6 +1310,14 @@ case "$1" in
     wire-propose)
         [[ $# -lt 2 ]] && usage
         wire_propose "$2"
+        ;;
+    retire-propose)
+        [[ $# -lt 3 ]] && usage
+        retire_propose "$2" "$3"
+        ;;
+    retire-verify)
+        [[ $# -lt 2 ]] && usage
+        retire_verify "$2"
         ;;
     list-chains)
         list_chains

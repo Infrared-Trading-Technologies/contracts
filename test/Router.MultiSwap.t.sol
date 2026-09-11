@@ -5,6 +5,7 @@ import { Test, Vm } from "forge-std/Test.sol";
 import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { Router } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "./helpers/RouterAuth.sol";
 import { MockDEX } from "./mocks/MockDEX.sol";
 import { ReentrantPartner } from "./mocks/ReentrantPartner.sol";
 import { IExecutor } from "../src/interfaces/IExecutor.sol";
@@ -122,8 +123,30 @@ contract RouterMultiSwapTest is Test {
         r[1] = b;
     }
 
+    // ------------------------------------------------------------------
+    // Backend authorization (NM-1048): every user-facing swap carries a signature by
+    // `authSigner` over the exact params, the taker, a fresh nonce and a 3-minute expiry.
+    // ------------------------------------------------------------------
+
+    uint256 internal authSignerPk;
+    address internal authSigner;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
     function setUp() public {
-        router = new Router(address(this), liquidator);
+        (authSigner, authSignerPk) = makeAddrAndKey("backend-signer");
+        router = new Router(address(this), liquidator, authSigner);
         executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
@@ -293,7 +316,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.recordLogs();
         vm.prank(user);
-        uint256[] memory amountsOut = router.swapMulti(p);
+        uint256[] memory amountsOut = router.swapMulti(p, _authMulti(p, user));
         _assertOnlyMultiSwapEvent(vm.getRecordedLogs());
 
         assertEq(amountsOut.length, 2, "amountsOut length");
@@ -326,7 +349,7 @@ contract RouterMultiSwapTest is Test {
         uint256 executorTokenABefore = tokenA.balanceOf(address(executor));
 
         vm.prank(user);
-        uint256[] memory amountsOut = router.swapMulti{ value: ethAmt }(p);
+        uint256[] memory amountsOut = router.swapMulti{ value: ethAmt }(p, _authMulti(p, user));
 
         assertEq(amountsOut[0], outC, "amountsOut C");
         assertEq(amountsOut[1], outD, "amountsOut D");
@@ -375,7 +398,7 @@ contract RouterMultiSwapTest is Test {
         p.partnerRecipient = address(attacker);
 
         vm.prank(user);
-        router.swapMulti{ value: ethAmt }(p);
+        router.swapMulti{ value: ethAmt }(p, _authMulti(p, user));
 
         assertTrue(attacker.attackAttempted(), "partner received control mid-swap");
         assertFalse(attacker.attackSucceeded(), "reentry into the executor must fail");
@@ -442,7 +465,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.DuplicateToken.selector, address(tokenA)));
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     /// @notice Duplicate token in the outputs array reverts DuplicateToken with the offending token.
@@ -468,7 +491,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.DuplicateToken.selector, address(tokenC)));
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     /// @notice Same token appearing in both inputs and outputs reverts InputOutputIntersection
@@ -492,7 +515,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.InputOutputIntersection.selector, address(tokenA)));
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     // ==================================================================
@@ -520,7 +543,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ArrayLengthMismatch.selector);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     /// @notice Empty inputs array reverts ZeroInputAmount per the spec's Error Handling table.
@@ -541,7 +564,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ZeroInputAmount.selector);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     /// @notice Empty outputs array reverts ZeroOutputQuote per the spec's Error Handling table.
@@ -561,7 +584,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ZeroOutputQuote.selector);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     /// @notice Any zero entry in the inputAmounts array reverts ZeroInputAmount.
@@ -586,7 +609,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ZeroInputAmount.selector);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 
     // ==================================================================
@@ -633,7 +656,7 @@ contract RouterMultiSwapTest is Test {
         p.protocolFeeBps = 200;
 
         vm.prank(user);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
 
         // Each input's protocol-fee share retained per-token in its own balance slot: 20e18 each.
         assertEq(tokenA.balanceOf(address(router)), 20e18, "router retains 2% of A");
@@ -706,7 +729,7 @@ contract RouterMultiSwapTest is Test {
         );
 
         vm.prank(user);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
 
         // Partner's per-output share: 1% of each post-cap amountOut, in each output's own token.
         assertEq(tokenC.balanceOf(alice), 10e18, "partner C");
@@ -790,7 +813,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.recordLogs();
         vm.prank(user);
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
         _assertOnlyMultiSwapEvent(vm.getRecordedLogs());
 
         // On-chain balances agree with the emitted per-token figures.
@@ -836,7 +859,7 @@ contract RouterMultiSwapTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.OutputMinUnreachable.selector, uint256(496e18), uint256(495e18)));
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
         assertEq(tokenA.balanceOf(user), amtA, "nothing pulled");
         assertEq(tokenB.balanceOf(user), amtB, "nothing pulled");
     }
@@ -875,6 +898,6 @@ contract RouterMultiSwapTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(Router.SlippageExceeded.selector, address(tokenD), uint256(700e18), uint256(800e18))
         );
-        router.swapMulti(p);
+        router.swapMulti(p, _authMulti(p, user));
     }
 }

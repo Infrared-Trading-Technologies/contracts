@@ -7,6 +7,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { Router, RouterErrors } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "./helpers/RouterAuth.sol";
 import { MockDEX } from "./mocks/MockDEX.sol";
 
 /// @title MockERC20
@@ -94,8 +95,30 @@ contract RouterAccessTest is Test {
     event LiquidatorUpdated(address previousLiquidator, address newLiquidator);
     event FundsTransferred(address[] tokens, uint256[] amounts, address dest);
 
+    // ------------------------------------------------------------------
+    // Backend authorization (NM-1048): every user-facing swap carries a signature by
+    // `authSigner` over the exact params, the taker, a fresh nonce and a 3-minute expiry.
+    // ------------------------------------------------------------------
+
+    uint256 internal authSignerPk;
+    address internal authSigner;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
     function setUp() public {
-        router = new Router(owner, liquidator);
+        (authSigner, authSignerPk) = makeAddrAndKey("backend-signer");
+        router = new Router(owner, liquidator, authSigner);
         executor = new ExecutionProxy(address(router));
 
         vm.startPrank(owner);
@@ -131,7 +154,7 @@ contract RouterAccessTest is Test {
             weirollState: state
         });
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         assertEq(tokenA.balanceOf(address(router)), SEED_DUST, "router dust seeded");
     }
@@ -336,7 +359,7 @@ contract RouterAccessTest is Test {
 
         vm.prank(user);
         vm.expectRevert(RouterErrors.Paused.selector);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     function test_Pause_BlocksSwapMulti() public {
@@ -347,7 +370,7 @@ contract RouterAccessTest is Test {
 
         vm.prank(user);
         vm.expectRevert(RouterErrors.Paused.selector);
-        router.swapMulti(mp);
+        router.swapMulti(mp, _authMulti(mp, user));
     }
 
     function test_Pause_DoesNotBlockSweep() public {
@@ -380,14 +403,14 @@ contract RouterAccessTest is Test {
         // While paused: swap reverts.
         vm.prank(user);
         vm.expectRevert(RouterErrors.Paused.selector);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         // After unpause: same params succeed.
         vm.prank(owner);
         router.unpause();
 
         vm.prank(user);
-        uint256 amountOut = router.swap(p);
+        uint256 amountOut = router.swap(p, _auth(p, user));
         assertEq(amountOut, SEED_OUTPUT, "swap restored after unpause");
     }
 
