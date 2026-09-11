@@ -29,6 +29,8 @@ DEPLOYER_ADDRESS=0x...                                 # Printed by setup-deploy
 SAFE_ADDRESS=0x...                                     # Safe multi-sig (required for mainnet)
 ROUTER_OWNER=0x...                                     # Router owner; defaults to SAFE_ADDRESS, else DEPLOYER_ADDRESS
 ROUTER_LIQUIDATOR=0x...                                # Liquidator hot wallet (separate keystore)
+ROUTER_SIGNER=0x...                                    # Backend authorization signer (required, no fallback)
+ROUTER_SIGNER_11155111=0x...                           # Optional per-chain override (testnets use a separate key)
 
 SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
 BASE_SEPOLIA_RPC_URL=https://base-sepolia.g.alchemy.com/v2/YOUR_KEY
@@ -40,6 +42,8 @@ ETHERSCAN_API_KEY=YOUR_ETHERSCAN_API_KEY   # V2 key; works across all supported 
 **Notes:**
 - Only the `deploy` command needs the keystore password; `preview` and `dry-run` simulate using `--sender` only.
 - `SAFE_ADDRESS` is required for mainnet. For testnet it's optional -- the deployer EOA is used as owner if not provided.
+- `ROUTER_SIGNER` (or `ROUTER_SIGNER_<chainId>`) is required on every chain. It is the address of the key the gateway signs swap authorizations with (`go run ./cmd/signer-address` in the backend prints it from the Secret Manager key). A mismatch makes the gateway refuse to build.
+- Redeploying the Router (any bytecode change) needs a `SALT_VERSION` bump; one bump covers every Router change since the last deploy.
 
 See `.env.example` for the full template.
 
@@ -49,7 +53,7 @@ Deploys 7 contracts (order in `chains.json` `contracts`):
 
 | Contract        | Purpose                                                                    |
 | --------------- | -------------------------------------------------------------------------- |
-| Router          | User-facing entry point: holds ERC20 approvals, fees, slippage; `Ownable2Step` |
+| Router          | User-facing entry point: holds ERC20 approvals, fees, slippage; verifies a backend-signed authorization on every swap; `Ownable2Step` |
 | ExecutionProxy  | Stateless Weiroll VM executor invoked by the Router (no owner, no storage) |
 | Tupler          | Byte tuple extraction helper                                               |
 | Integer         | Comparison utilities                                                       |
@@ -248,6 +252,31 @@ Both txs target the Router; batching makes the transition atomic from the signer
 cast call <ROUTER_ADDRESS> "executor()(address)" --rpc-url $RPC_URL
 # Must equal <EXECUTION_PROXY_ADDRESS>; until then the Router reverts on every swap.
 ```
+
+## Backend Signer
+
+Every user-facing swap carries an EIP-712 authorization signed by the gateway's key (Nethermind NM-1048). The Router accepts `signer()`, or `previousSigner()` until `previousSignerValidUntil()`.
+
+```bash
+cast call <ROUTER_ADDRESS> "signer()(address)" --rpc-url $RPC_URL   # must equal the gateway's key address
+```
+
+**Routine rotation** (do the on-chain step first; the reverse order fails closed, never open):
+1. Generate the new key, store it in Secret Manager, print its address: `go run ./cmd/signer-address`.
+2. Owner: `setSigner(<new>, 900)` on every chain that uses the key (15 min grace keeps in-flight authorizations valid).
+3. Roll the gateway to the new key inside the grace window; the boot-time signer probe must pass on every chain.
+
+**Compromise**: `revokeSigner()` from the liquidator hot wallet (immediate, fail closed, no multisig latency) or `setSigner(<new>, 0)` from the owner, on every chain that shares the key. Any non-zero grace keeps the old key alive for that long; treat it as a security decision. `setSigner(0, <grace>)` drains in-flight authorizations without issuing new ones.
+
+**Retiring a previous Router** after a redeploy: the old contract keeps accepting its old calldata until paused.
+
+```bash
+./deploy.sh retire-propose <chain-id> <old-router>   # proposes pause() to the Safe
+# execute in the Safe, sweep with transferRouterFunds, then:
+RETIRE_TOKENS=0x...,0x... ./deploy.sh retire-verify <chain-id>   # exits non-zero until paused and empty
+```
+
+`RETIRE_TOKENS` is required: list every token the old Router held protocol fees or captured slippage in (the `Swap` / `MultiSwap` logs give the set). Without it the command refuses to run rather than pass on native ETH alone.
 
 ## Post-Deployment Verification
 

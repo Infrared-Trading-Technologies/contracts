@@ -16,6 +16,7 @@ import {
 import { MockDEX } from "./mocks/MockDEX.sol";
 import { RouterReentrantReceiver } from "./mocks/RouterReentrantReceiver.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "./helpers/RouterAuth.sol";
 
 /// @title MockERC20
 /// @notice Minimal mintable ERC20 with boolean returns. Duplicated from the sibling Router
@@ -105,8 +106,30 @@ contract RouterAdversarialTest is Test {
     // ReentrancyGuardReentrantCall() selector from OpenZeppelin's ReentrancyGuard (v5.5.0).
     bytes4 internal constant REENTRANT_GUARD_SELECTOR = bytes4(keccak256("ReentrancyGuardReentrantCall()"));
 
+    // ------------------------------------------------------------------
+    // Backend authorization (NM-1048): every user-facing swap carries a signature by
+    // `authSigner` over the exact params, the taker, a fresh nonce and a 3-minute expiry.
+    // ------------------------------------------------------------------
+
+    uint256 internal authSignerPk;
+    address internal authSigner;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
     function setUp() public {
-        router = new Router(address(this), liquidator);
+        (authSigner, authSignerPk) = makeAddrAndKey("backend-signer");
+        router = new Router(address(this), liquidator, authSigner);
         executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
@@ -271,7 +294,7 @@ contract RouterAdversarialTest is Test {
         p.protocolFeeBps = protocolBps;
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         // Router.balanceOf(input) == pulled - forwardAmount == protocolFee (computed off pulled).
         assertEq(fot.balanceOf(address(router)), protocolFee, "router retains fee off pulled");
@@ -312,7 +335,7 @@ contract RouterAdversarialTest is Test {
             _params(address(tokenA), inputAmount, address(fot), dexMint, 950e18, receiver, commands, state);
 
         vm.prank(user);
-        uint256 returned = router.swap(pOk);
+        uint256 returned = router.swap(pOk, _auth(pOk, user));
         assertEq(returned, routerMeasures, "router measures post-burn delta");
         // Receiver gets a further 1% burn on the Router -> receiver transfer.
         assertEq(fot.balanceOf(receiver), (routerMeasures * 9900) / 10_000, "receiver post second burn");
@@ -331,7 +354,7 @@ contract RouterAdversarialTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(Router.SlippageExceeded.selector, address(fot), routerMeasures, uint256(995e18))
         );
-        router.swap(pTight);
+        router.swap(pTight, _auth(pTight, user));
     }
 
     // ==================================================================
@@ -362,7 +385,7 @@ contract RouterAdversarialTest is Test {
         p.passPositiveSlippageToUser = false; // cap at outputQuote
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, dexMint, "user receives capped quote, not the rebased surplus");
         // Rebase share-math rounds down on transfer; allow 1 wei of dust per leg.
@@ -403,7 +426,7 @@ contract RouterAdversarialTest is Test {
                 Router.SlippageExceeded.selector, address(rebase), postRebaseBalance, uint256(960e18)
             )
         );
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     // ==================================================================
@@ -431,7 +454,7 @@ contract RouterAdversarialTest is Test {
             _params(address(nrt), inputAmount, address(tokenB), producedOut, 800e18, receiver, commands, state);
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, producedOut, "return == outputDelta");
         // No-return token transferred cleanly on both legs (user -> Router -> executor).
@@ -460,7 +483,7 @@ contract RouterAdversarialTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(frt)));
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     /// @notice FalseReturningToken as output. The Weiroll program mints FRT directly to the
@@ -488,7 +511,7 @@ contract RouterAdversarialTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(frt)));
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     // ==================================================================
@@ -520,7 +543,7 @@ contract RouterAdversarialTest is Test {
         reenter.setAttackEnabled(true);
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         // Inner try/catch recorded the reentrancy-guard selector.
         assertTrue(reenter.attackAttempted(), "reentry was attempted");
@@ -560,7 +583,7 @@ contract RouterAdversarialTest is Test {
         uint256 reenterEthBefore = address(reenter).balance;
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         // Inner try/catch recorded the reentrancy-guard selector.
         assertTrue(reenter.attackAttempted(), "reentry was attempted");

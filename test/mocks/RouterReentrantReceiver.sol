@@ -69,7 +69,9 @@ contract RouterReentrantReceiver is ITransferCallback {
             weirollState: new bytes[](0)
         });
 
-        try router.swap(p) returns (uint256) {
+        // Any Authorization works here: `nonReentrant` reverts before it is inspected.
+        Router.Authorization memory auth = Router.Authorization({ nonce: bytes32(0), expiry: 0, signature: "" });
+        try router.swap(p, auth) returns (uint256) {
             attackSucceeded = true;
         } catch (bytes memory reason) {
             attackSucceeded = false;

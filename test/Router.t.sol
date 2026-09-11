@@ -7,6 +7,7 @@ import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { IExecutor } from "../src/interfaces/IExecutor.sol";
 import { Router, RouterErrors } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "./helpers/RouterAuth.sol";
 import { MockDEX } from "./mocks/MockDEX.sol";
 
 /// @title MockERC20
@@ -156,8 +157,30 @@ contract RouterTest is Test {
     event PendingExecutorSet(address pendingExecutor);
     event ExecutorUpdated(address previousExecutor, address newExecutor);
 
+    // ------------------------------------------------------------------
+    // Backend authorization (NM-1048): every user-facing swap carries a signature by
+    // `authSigner` over the exact params, the taker, a fresh nonce and a 3-minute expiry.
+    // ------------------------------------------------------------------
+
+    uint256 internal authSignerPk;
+    address internal authSigner;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
     function setUp() public {
-        router = new Router(address(this), liquidator);
+        (authSigner, authSignerPk) = makeAddrAndKey("backend-signer");
+        router = new Router(address(this), liquidator, authSigner);
         executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
@@ -294,7 +317,7 @@ contract RouterTest is Test {
         emit Swap(user, address(tokenA), amountIn, address(tokenB), amountOut, amountOut, 0, 0, 0, address(0));
 
         vm.prank(user);
-        uint256 returned = router.swap(params);
+        uint256 returned = router.swap(params, _auth(params, user));
 
         assertEq(returned, amountOut, "return value");
         assertEq(tokenB.balanceOf(receiver), amountOut, "receiver balance");
@@ -318,7 +341,7 @@ contract RouterTest is Test {
         emit Swap(user, NATIVE_ETH, amountIn, address(tokenB), amountOut, amountOut, 0, 0, 0, address(0));
 
         vm.prank(user);
-        uint256 returned = router.swap{ value: amountIn }(params);
+        uint256 returned = router.swap{ value: amountIn }(params, _auth(params, user));
 
         assertEq(returned, amountOut, "return value");
         assertEq(tokenB.balanceOf(receiver), amountOut, "receiver tokenB");
@@ -345,7 +368,7 @@ contract RouterTest is Test {
         emit Swap(user, address(tokenA), amountIn, NATIVE_ETH, amountOut, amountOut, 0, 0, 0, address(0));
 
         vm.prank(user);
-        uint256 returned = router.swap(params);
+        uint256 returned = router.swap(params, _auth(params, user));
 
         assertEq(returned, amountOut, "return value");
         assertEq(receiver.balance - receiverBalanceBefore, amountOut, "receiver ETH delta");
@@ -363,7 +386,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ZeroInputAmount.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
     }
 
     function test_Revert_ZeroOutputQuote() public {
@@ -373,7 +396,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ZeroOutputQuote.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
     }
 
     function test_Revert_ZeroOutputMin() public {
@@ -383,7 +406,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.ZeroOutputMin.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
     }
 
     function test_Revert_InvalidSlippageBounds() public {
@@ -394,7 +417,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.InvalidSlippageBounds.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
     }
 
     function test_Revert_SelfSwap() public {
@@ -404,7 +427,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.SelfSwap.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
     }
 
     function test_Revert_ETHValueMismatch_NativeIn() public {
@@ -415,7 +438,7 @@ contract RouterTest is Test {
         // msg.value (0.5 ether) != inputAmount (1 ether)
         vm.prank(user);
         vm.expectRevert(Router.ETHValueMismatch.selector);
-        router.swap{ value: 0.5 ether }(params);
+        router.swap{ value: 0.5 ether }(params, _auth(params, user));
     }
 
     function test_Revert_ETHValueMismatch_ERC20In() public {
@@ -430,12 +453,12 @@ contract RouterTest is Test {
         // msg.value != 0 with ERC20 input
         vm.prank(user);
         vm.expectRevert(Router.ETHValueMismatch.selector);
-        router.swap{ value: 1 ether }(params);
+        router.swap{ value: 1 ether }(params, _auth(params, user));
     }
 
     function test_Revert_ExecutorNotSet() public {
         // Fresh Router with no executor wired up.
-        Router freshRouter = new Router(address(this), liquidator);
+        Router freshRouter = new Router(address(this), liquidator, authSigner);
 
         (bytes32[] memory commands, bytes[] memory state) = _buildA2BProgram(1000e18, 900e18);
         Router.SwapParams memory params =
@@ -446,8 +469,11 @@ contract RouterTest is Test {
         tokenA.approve(address(freshRouter), 1000e18);
 
         vm.prank(user);
+        Router.Authorization memory auth = RouterAuth.authorizeSwap(
+            address(freshRouter), authSignerPk, params, user, bytes32(++authNonce), block.timestamp + 180
+        );
         vm.expectRevert(Router.ExecutorNotSet.selector);
-        freshRouter.swap(params);
+        freshRouter.swap(params, auth);
     }
 
     function test_Revert_Paused() public {
@@ -459,7 +485,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(RouterErrors.Paused.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
     }
 
     // ------------------------------------------------------------------
@@ -487,7 +513,7 @@ contract RouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(RevertingExecutor.Boom.selector);
-        router.swap(params);
+        router.swap(params, _auth(params, user));
 
         // Atomic rollback invariants.
         assertEq(tokenA.balanceOf(user), userBalanceBefore, "user keeps input");
@@ -544,7 +570,7 @@ contract RouterTest is Test {
             _buildParams(address(tokenA), amountIn, address(tokenB), amountOut, 800e18, receiver, commands, state);
 
         vm.prank(user);
-        uint256 returned = router.swap(params);
+        uint256 returned = router.swap(params, _auth(params, user));
         assertEq(returned, amountOut, "swap against newExec succeeded");
         assertEq(tokenB.balanceOf(receiver), amountOut, "receiver paid by newExec path");
         // tokenA forwarded by Router has been consumed by the MockDEX invoked from newExec.

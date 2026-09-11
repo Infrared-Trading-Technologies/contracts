@@ -35,7 +35,8 @@ contract RouterInvariantTest is Test {
     function setUp() public {
         // Owner and liquidator are this test contract -- neither is exercised by the handler, and
         // the admin surface is covered separately in test/Router.Access.t.sol.
-        router = new Router(address(this), address(this));
+        (address authSigner, uint256 authSignerPk) = makeAddrAndKey("backend-signer");
+        router = new Router(address(this), address(this), authSigner);
         executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
@@ -46,7 +47,7 @@ contract RouterInvariantTest is Test {
         erc20s[2] = address(new InvariantMockERC20("Token C", "TKNC"));
         erc20s[3] = address(new InvariantMockERC20("Token D", "TKND"));
 
-        handler = new RouterHandler(router, erc20s);
+        handler = new RouterHandler(router, erc20s, authSignerPk);
 
         // Wire the fuzzer to only call the handler's `swapRandom` and `swapMultiRandom` entry
         // points. All other handler-internal helpers (`_computeInputFees`, `_updateOutputGhosts`,

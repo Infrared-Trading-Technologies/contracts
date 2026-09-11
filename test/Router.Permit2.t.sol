@@ -8,6 +8,7 @@ import { ISignatureTransfer } from "permit2/interfaces/ISignatureTransfer.sol";
 import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { Router, RouterErrors } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "./helpers/RouterAuth.sol";
 import { MockDEX } from "./mocks/MockDEX.sol";
 
 /// @title MockPermit2ERC20
@@ -122,6 +123,27 @@ contract RouterPermit2Test is Test {
     address public receiver = makeAddr("receiver");
     address public liquidator = makeAddr("liquidator");
 
+    // ------------------------------------------------------------------
+    // Backend authorization (NM-1048): every user-facing swap carries a signature by
+    // `authSigner` over the exact params, the taker, a fresh nonce and a 3-minute expiry.
+    // ------------------------------------------------------------------
+
+    uint256 internal authSignerPk;
+    address internal authSigner;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
     function setUp() public {
         // `vm.getCode` / `deployCodeTo` can't resolve artifacts from a different solc
         // version than the project's main one (Permit2 pins 0.8.17, ours is 0.8.24).
@@ -135,7 +157,9 @@ contract RouterPermit2Test is Test {
             vm.parseJsonBytes(vm.readFile("out/Permit2.sol/Permit2.json"), ".deployedBytecode.object");
         vm.etch(PERMIT2_ADDR, deployed);
 
-        router = new Router(address(this), liquidator);
+        (authSigner, authSignerPk) = makeAddrAndKey("backend-signer");
+
+        router = new Router(address(this), liquidator, authSigner);
         executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
@@ -277,7 +301,7 @@ contract RouterPermit2Test is Test {
         Router.Permit2Data memory permit = Router.Permit2Data({ nonce: 0, deadline: deadline, signature: sig });
 
         vm.prank(user);
-        uint256 returned = router.swapPermit2(params, permit);
+        uint256 returned = router.swapPermit2(params, permit, _auth(params, user));
 
         assertEq(returned, amountOut, "amountOut");
         assertEq(tokenB.balanceOf(receiver), amountOut, "receiver gets B");
@@ -357,7 +381,7 @@ contract RouterPermit2Test is Test {
         Router.Permit2Data memory permit = Router.Permit2Data({ nonce: 0, deadline: deadline, signature: sig });
 
         vm.prank(user);
-        uint256[] memory amountsOut = router.swapMultiPermit2(mp, permit);
+        uint256[] memory amountsOut = router.swapMultiPermit2(mp, permit, _authMulti(mp, user));
 
         assertEq(amountsOut.length, 2, "len");
         assertEq(amountsOut[0], outB, "B out");
@@ -383,7 +407,7 @@ contract RouterPermit2Test is Test {
 
         vm.expectRevert(Router.NativeInputNotPermit2Compatible.selector);
         vm.prank(user);
-        router.swapPermit2(params, permit);
+        router.swapPermit2(params, permit, _auth(params, user));
     }
 
     function test_SwapMultiPermit2_RevertsOnNativeInputSlot() public {
@@ -406,7 +430,7 @@ contract RouterPermit2Test is Test {
 
         vm.expectRevert(Router.NativeInputNotPermit2Compatible.selector);
         vm.prank(user);
-        router.swapMultiPermit2(mp, permit);
+        router.swapMultiPermit2(mp, permit, _authMulti(mp, user));
     }
 
     // ---------------------------------------------------------------
@@ -431,7 +455,7 @@ contract RouterPermit2Test is Test {
 
         vm.expectRevert(abi.encodeWithSignature("SignatureExpired(uint256)", deadline));
         vm.prank(user);
-        router.swapPermit2(params, permit);
+        router.swapPermit2(params, permit, _auth(params, user));
     }
 
     // ---------------------------------------------------------------
@@ -456,12 +480,12 @@ contract RouterPermit2Test is Test {
         bytes memory sig = _signSinglePermit(address(tokenA), amountIn, 7, deadline, address(router));
         Router.Permit2Data memory permit = Router.Permit2Data({ nonce: 7, deadline: deadline, signature: sig });
         vm.prank(user);
-        router.swapPermit2(params, permit);
+        router.swapPermit2(params, permit, _auth(params, user));
 
         // Second swap with the same signature/nonce must revert.
         vm.expectRevert(abi.encodeWithSignature("InvalidNonce()"));
         vm.prank(user);
-        router.swapPermit2(params, permit);
+        router.swapPermit2(params, permit, _auth(params, user));
     }
 
     // ---------------------------------------------------------------
@@ -489,7 +513,7 @@ contract RouterPermit2Test is Test {
         // selector is `InvalidSigner()` from Permit2's `SignatureVerification` library.
         vm.expectRevert(abi.encodeWithSignature("InvalidSigner()"));
         vm.prank(user);
-        router.swapPermit2(params, permit);
+        router.swapPermit2(params, permit, _auth(params, user));
     }
 
     // ---------------------------------------------------------------
@@ -520,7 +544,7 @@ contract RouterPermit2Test is Test {
         Router.Permit2Data memory permit = Router.Permit2Data({ nonce: 42, deadline: deadline, signature: sig });
 
         vm.prank(user);
-        uint256 returned = router.swapPermit2(params, permit);
+        uint256 returned = router.swapPermit2(params, permit, _auth(params, user));
 
         assertEq(returned, amountOut, "amountOut uses pulled");
         assertEq(tokenB.balanceOf(receiver), amountOut, "receiver gets reduced amount");
@@ -570,7 +594,7 @@ contract RouterPermit2Test is Test {
         Router.Permit2Data memory permit = Router.Permit2Data({ nonce: 99, deadline: deadline, signature: sig });
 
         vm.prank(user);
-        uint256 returned = router.swapPermit2(params, permit);
+        uint256 returned = router.swapPermit2(params, permit, _auth(params, user));
 
         assertEq(returned, quote, "amountOut capped at quote");
         assertEq(tokenB.balanceOf(receiver), quote, "receiver gets quote");
@@ -604,6 +628,6 @@ contract RouterPermit2Test is Test {
 
         vm.expectRevert(RouterErrors.Paused.selector);
         vm.prank(user);
-        router.swapPermit2(params, permit);
+        router.swapPermit2(params, permit, _auth(params, user));
     }
 }

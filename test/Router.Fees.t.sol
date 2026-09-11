@@ -5,6 +5,7 @@ import { Test, Vm } from "forge-std/Test.sol";
 import { ExecutionProxy } from "../src/ExecutionProxy.sol";
 import { Router } from "../src/Router.sol";
 import { WeirollTestHelper } from "./helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "./helpers/RouterAuth.sol";
 import { MockDEX } from "./mocks/MockDEX.sol";
 
 /// @title MockERC20
@@ -91,8 +92,30 @@ contract RouterFeesTest is Test {
         address partnerRecipient
     );
 
+    // ------------------------------------------------------------------
+    // Backend authorization (NM-1048): every user-facing swap carries a signature by
+    // `authSigner` over the exact params, the taker, a fresh nonce and a 3-minute expiry.
+    // ------------------------------------------------------------------
+
+    uint256 internal authSignerPk;
+    address internal authSigner;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
     function setUp() public {
-        router = new Router(address(this), liquidator);
+        (authSigner, authSignerPk) = makeAddrAndKey("backend-signer");
+        router = new Router(address(this), liquidator, authSigner);
         executor = new ExecutionProxy(address(router));
         router.setPendingExecutor(address(executor));
         router.acceptExecutor();
@@ -187,7 +210,7 @@ contract RouterFeesTest is Test {
         p.protocolFeeBps = 50;
 
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         assertEq(tokenA.balanceOf(address(router)), 5e18, "router retains protocol fee");
         assertEq(tokenB.balanceOf(receiver), producedOut, "receiver gets full quote");
@@ -204,7 +227,7 @@ contract RouterFeesTest is Test {
         p.protocolFeeBps = 0;
 
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         assertEq(tokenA.balanceOf(address(router)), 0, "no protocol fee retained");
         assertEq(tokenB.balanceOf(receiver), producedOut, "receiver paid in full");
@@ -218,7 +241,7 @@ contract RouterFeesTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.ProtocolFeeExceedsCap.selector, uint256(201)));
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     /// @notice 200 bps (cap) succeeds and retains 2% in the Router.
@@ -232,7 +255,7 @@ contract RouterFeesTest is Test {
         p.protocolFeeBps = 200;
 
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         assertEq(tokenA.balanceOf(address(router)), 20e18, "router retains 2% at cap");
         assertEq(tokenB.balanceOf(receiver), producedOut, "receiver paid in full");
@@ -249,7 +272,7 @@ contract RouterFeesTest is Test {
         Router.SwapParams memory p1 = _mkParams(amountIn, forwardAmount, producedOut, 900e18, 800e18);
         p1.protocolFeeBps = 50;
         vm.prank(user);
-        router.swap(p1);
+        router.swap(p1, _auth(p1, user));
         assertEq(tokenA.balanceOf(address(router)), 5e18, "fee after swap 1");
 
         // Swap 2.
@@ -257,7 +280,7 @@ contract RouterFeesTest is Test {
         Router.SwapParams memory p2 = _mkParams(amountIn, forwardAmount, producedOut, 900e18, 800e18);
         p2.protocolFeeBps = 50;
         vm.prank(user);
-        router.swap(p2);
+        router.swap(p2, _auth(p2, user));
         assertEq(tokenA.balanceOf(address(router)), 10e18, "fees accumulate");
     }
 
@@ -272,7 +295,7 @@ contract RouterFeesTest is Test {
 
         vm.recordLogs();
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         bytes32 sigSwap =
@@ -320,7 +343,7 @@ contract RouterFeesTest is Test {
         p.partnerFeeOnOutput = false;
 
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         assertEq(tokenA.balanceOf(alice), 10e18, "partner receives input fee");
         assertEq(tokenA.balanceOf(address(router)), 0, "no protocol fee retained");
@@ -336,7 +359,7 @@ contract RouterFeesTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.PartnerFeeExceedsCap.selector, uint256(201)));
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     /// @notice partnerFeeBps > 0 with zero recipient reverts InvalidPartnerRecipient.
@@ -348,7 +371,7 @@ contract RouterFeesTest is Test {
 
         vm.prank(user);
         vm.expectRevert(Router.InvalidPartnerRecipient.selector);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     /// @notice Protocol (50 bps) + partner input (100 bps) stack on input. Executor gets
@@ -369,7 +392,7 @@ contract RouterFeesTest is Test {
         p.partnerFeeOnOutput = false;
 
         vm.prank(user);
-        router.swap(p);
+        router.swap(p, _auth(p, user));
 
         assertEq(tokenA.balanceOf(address(router)), expectedProtocolFee, "router holds protocol fee only");
         assertEq(tokenA.balanceOf(alice), expectedPartnerFee, "partner holds partner fee");
@@ -394,7 +417,7 @@ contract RouterFeesTest is Test {
         p.partnerFeeOnOutput = true;
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, 990e18, "return = user amount");
         assertEq(tokenB.balanceOf(alice), 10e18, "partner output fee");
@@ -417,7 +440,7 @@ contract RouterFeesTest is Test {
         p.passPositiveSlippageToUser = false;
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, 990e18, "user amount post partner + cap");
         assertEq(tokenB.balanceOf(alice), 10e18, "partner fee computed on post-cap amount");
@@ -442,7 +465,7 @@ contract RouterFeesTest is Test {
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(Router.OutputMinUnreachable.selector, uint256(995e18), uint256(990e18)));
-        router.swap(p);
+        router.swap(p, _auth(p, user));
         assertEq(tokenA.balanceOf(user), amountIn, "nothing pulled: rejected before execution");
     }
 
@@ -458,7 +481,7 @@ contract RouterFeesTest is Test {
         p.partnerFeeOnOutput = true;
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, 990e18, "user credited exactly the ceiling");
         assertEq(tokenB.balanceOf(receiver), 990e18, "receiver");
@@ -483,7 +506,7 @@ contract RouterFeesTest is Test {
                 Router.SlippageExceeded.selector, address(tokenB), uint256(980.1e18), uint256(985e18)
             )
         );
-        router.swap(p);
+        router.swap(p, _auth(p, user));
     }
 
     /// @notice With pass-through on there is no cap, so an outputMin up to outputQuote stays
@@ -499,7 +522,7 @@ contract RouterFeesTest is Test {
         p.passPositiveSlippageToUser = true;
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, 1089e18, "1100 less 1% output fee, no cap");
         assertEq(tokenB.balanceOf(alice), 11e18, "partner fee on the uncapped amount");
@@ -523,7 +546,7 @@ contract RouterFeesTest is Test {
         uint256 routerBefore = tokenB.balanceOf(address(router));
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         // Assert BOTH user and router balances per the [manual] acceptance criterion.
         assertEq(returned, quote, "return capped at quote");
@@ -545,7 +568,7 @@ contract RouterFeesTest is Test {
         uint256 routerBefore = tokenB.balanceOf(address(router));
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, producedOut, "return is full produced");
         assertEq(tokenB.balanceOf(receiver) - receiverBefore, producedOut, "user gets full");
@@ -565,7 +588,7 @@ contract RouterFeesTest is Test {
         uint256 routerBefore = tokenB.balanceOf(address(router));
 
         vm.prank(user);
-        uint256 returned = router.swap(p);
+        uint256 returned = router.swap(p, _auth(p, user));
 
         assertEq(returned, producedOut, "return = produced");
         assertEq(tokenB.balanceOf(receiver) - receiverBefore, producedOut, "user receives produced");
@@ -585,7 +608,7 @@ contract RouterFeesTest is Test {
         uint256 recvBefore1 = tokenB.balanceOf(receiver);
         uint256 routerBefore1 = tokenB.balanceOf(address(router));
         vm.prank(user);
-        uint256 ret1 = router.swap(p1);
+        uint256 ret1 = router.swap(p1, _auth(p1, user));
         assertEq(ret1, producedOut, "return flag-off");
         assertEq(tokenB.balanceOf(receiver) - recvBefore1, producedOut, "user flag-off");
         assertEq(tokenB.balanceOf(address(router)) - routerBefore1, 0, "router flag-off");
@@ -597,7 +620,7 @@ contract RouterFeesTest is Test {
         uint256 recvBefore2 = tokenB.balanceOf(receiver);
         uint256 routerBefore2 = tokenB.balanceOf(address(router));
         vm.prank(user);
-        uint256 ret2 = router.swap(p2);
+        uint256 ret2 = router.swap(p2, _auth(p2, user));
         assertEq(ret2, producedOut, "return flag-on");
         assertEq(tokenB.balanceOf(receiver) - recvBefore2, producedOut, "user flag-on");
         assertEq(tokenB.balanceOf(address(router)) - routerBefore2, 0, "router flag-on");
@@ -658,17 +681,17 @@ contract RouterFeesTest is Test {
         if (minOut > maxReachable) {
             vm.prank(user);
             vm.expectRevert(abi.encodeWithSelector(Router.OutputMinUnreachable.selector, minOut, maxReachable));
-            router.swap(p);
+            router.swap(p, _auth(p, user));
         } else if (expectedToUser < minOut) {
             vm.prank(user);
             vm.expectRevert(
                 abi.encodeWithSelector(Router.SlippageExceeded.selector, address(tokenB), expectedToUser, minOut)
             );
-            router.swap(p);
+            router.swap(p, _auth(p, user));
         } else {
             uint256 receiverBefore = tokenB.balanceOf(receiver);
             vm.prank(user);
-            uint256 returned = router.swap(p);
+            uint256 returned = router.swap(p, _auth(p, user));
             assertEq(returned, expectedToUser, "return matches expected");
             assertGe(tokenB.balanceOf(receiver) - receiverBefore, minOut, "user >= minOut");
             assertEq(tokenB.balanceOf(receiver) - receiverBefore, expectedToUser, "user == expected");

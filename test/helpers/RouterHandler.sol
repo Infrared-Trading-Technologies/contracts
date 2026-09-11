@@ -6,6 +6,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import { Router } from "src/Router.sol";
 import { WeirollTestHelper } from "test/helpers/WeirollTestHelper.sol";
+import { RouterAuth } from "test/helpers/RouterAuth.sol";
 
 /// @title InvariantMockERC20
 /// @notice Minimal mintable ERC20 used by the invariant handler. Exposes the public
@@ -164,7 +165,24 @@ contract RouterHandler is Test {
     // Construction
     // -------------------------------------------------------------------------
 
-    constructor(Router _router, address[4] memory erc20s) {
+    /// @dev Backend signer key: every handler swap is authorized like a real build would be.
+    uint256 internal immutable authSignerPk;
+    uint256 internal authNonce;
+
+    function _auth(Router.SwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    function _authMulti(Router.MultiSwapParams memory p, address taker) internal returns (Router.Authorization memory) {
+        return RouterAuth.authorizeMultiSwap(
+            address(router), authSignerPk, p, taker, bytes32(++authNonce), block.timestamp + 180
+        );
+    }
+
+    constructor(Router _router, address[4] memory erc20s, uint256 _authSignerPk) {
+        authSignerPk = _authSignerPk;
         router = _router;
         tokens[0] = erc20s[0];
         tokens[1] = erc20s[1];
@@ -305,7 +323,7 @@ contract RouterHandler is Test {
 
         uint256 ethValue = c.inputToken == NATIVE_ETH_SENTINEL ? c.inAmount : 0;
         vm.prank(c.user);
-        router.swap{ value: ethValue }(p);
+        router.swap{ value: ethValue }(p, _auth(p, c.user));
     }
 
     function _recordSingleGhosts(SingleCtx memory c) internal {
@@ -409,7 +427,7 @@ contract RouterHandler is Test {
         });
 
         vm.prank(c.user);
-        router.swapMulti{ value: c.ethValue }(p);
+        router.swapMulti{ value: c.ethValue }(p, _authMulti(p, c.user));
     }
 
     function _recordMultiGhosts(MultiCtx memory c) internal {

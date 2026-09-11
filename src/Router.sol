@@ -7,6 +7,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import { ISignatureTransfer } from "permit2/interfaces/ISignatureTransfer.sol";
 
@@ -28,10 +29,25 @@ library RouterErrors {
  *         (input- or output-denominated), and captures positive slippage between the backend-
  *         supplied `outputQuote` and the executor-produced amount. All economic logic lives
  *         here; the executor is a pure Weiroll VM invoked via `IExecutor.executePath`.
- * @dev This file freezes the Router ABI (events, errors, entry-point signatures, admin surface,
- *      sweep surface) so downstream tasks can land in parallel. Real implementations for
- *      `swap`, `swapMulti`, and `swapRouterFunds` land in INF-0005 and INF-0006 without
- *      changing any signature declared here.
+ * @dev Every user-facing swap carries a backend-signed EIP-712 authorization over the complete
+ *      swap parameters, the caller (`taker`), a nonce and an expiry (Nethermind NM-1048, High:
+ *      "Caller-supplied fee and positive slippage parameters let any user strip protocol fees,
+ *      partner fees and positive slippage capture from swaps"). The Router rejects any call
+ *      whose parameters differ from the signed values, so fees, `outputQuote` and the
+ *      positive-slippage flag cannot be edited after `/v1/build`; each authorization is
+ *      single-use and bound to this chain and this Router.
+ *
+ *      Residual risks accepted with that finding:
+ *      - The Weiroll program is disclosed in calldata and can be replayed through a
+ *        self-deployed VM (or the open pre-NM-1048 ExecutionProxy deployment); signing raises
+ *        the effort, it does not hide the route.
+ *      - The signer is a backend hot key. A compromised key can sign zero-fee authorizations
+ *        and arbitrary programs (reaching any residue held by the executor) until it is rotated
+ *        with `setSigner` or killed with `revokeSigner`.
+ *      - Partner fees are bound only within the quote the partner requested; the fee tier is
+ *        the requesting principal's, not the taker's.
+ *      - `taker` is the on-chain `msg.sender`; relayers, forwarders and EOA owners of a smart
+ *        account cannot submit an authorization issued to another address.
  */
 contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -39,7 +55,7 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     // -------------------------------------------------------------------------
     // Errors
     //
-    // The nineteen errors below are contract-scoped so external callers (tests,
+    // The errors below are contract-scoped so external callers (tests,
     // off-chain consumers) can reference them as `Router.ErrorName.selector`.
     // `Paused` lives in the `RouterErrors` library above to avoid the event/error
     // identifier collision documented on that library.
@@ -68,6 +84,19 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     error ArrayLengthMismatch();
     error NativeInputNotPermit2Compatible();
     error InsufficientRouterBalance();
+    /// @dev No active signer and no previous signer inside its grace window: every user-facing
+    ///      swap reverts until the owner sets one (fail closed, NM-1048).
+    error SignerNotSet();
+    /// @dev The authorization signature is malformed, malleable, or was not produced by an
+    ///      accepted signer over these exact parameters, this taker, this nonce, this expiry,
+    ///      this chain and this Router.
+    error InvalidAuthorization();
+    error AuthorizationExpired(uint256 expiry);
+    /// @dev `expiry` is more than `MAX_AUTHORIZATION_TTL` in the future; bounds the lifetime of
+    ///      anything a misconfigured or compromised backend can sign.
+    error AuthorizationExpiryTooFar(uint256 expiry);
+    error AuthorizationAlreadyUsed(bytes32 digest);
+    error InvalidGrace(uint256 graceSeconds);
 
     // -------------------------------------------------------------------------
     // Constants
@@ -77,14 +106,48 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     ///         Shared with the executor and Weiroll helper programs.
     address public constant NATIVE_ETH_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
-    /// @notice Hard cap on the caller-supplied `protocolFeeBps`. Immutable guarantee that
-    ///         the protocol fee taken from user input never exceeds 2.00%.
+    /// @notice Hard cap on the backend-signed `protocolFeeBps`. Immutable guarantee that
+    ///         the protocol fee taken from user input never exceeds 2.00%, whatever the
+    ///         signer authorizes.
     uint256 public constant MAX_PROTOCOL_FEE_BPS = 200;
 
-    /// @notice Hard cap on the caller-supplied `partnerFeeBps`. Immutable guarantee that
+    /// @notice Hard cap on the backend-signed `partnerFeeBps`. Immutable guarantee that
     ///         the partner fee never exceeds 2.00%. Caps are applied independently of the
     ///         protocol fee; the theoretical combined worst case on input is 4.00%.
     uint256 public constant MAX_PARTNER_FEE_BPS = 200;
+
+    /// @notice Longest an authorization may remain valid, measured from the block that checks
+    ///         it. The backend issues 3-minute authorizations; the cap bounds what a
+    ///         misconfigured or compromised signer can mint.
+    uint256 public constant MAX_AUTHORIZATION_TTL = 1 hours;
+
+    /// @notice Longest grace window `setSigner` may leave the previous signer valid for.
+    uint256 public constant MAX_SIGNER_GRACE = 1 hours;
+
+    /// @dev EIP-712 domain: `name` and `version` are compile-time constants and the separator is
+    ///      recomputed on every call from `block.chainid` and `address(this)`. No immutables and
+    ///      no cached separator, so this runtime bytecode verifies identically when installed at
+    ///      an address by a forked simulation, and a chain fork with a new chain id invalidates
+    ///      every outstanding authorization.
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant EIP712_NAME_HASH = keccak256("InfraredRouter");
+    bytes32 private constant EIP712_VERSION_HASH = keccak256("1");
+
+    /// @notice EIP-712 type hash of the single-swap authorization. Binds every `SwapParams`
+    ///         field (arrays hashed per EIP-712: `bytes32[]` as the keccak of the packed words,
+    ///         `bytes[]` as the keccak of the concatenated per-element keccaks), the taker, a
+    ///         nonce and an expiry.
+    bytes32 public constant SWAP_AUTHORIZATION_TYPEHASH = keccak256(
+        "SwapAuthorization(address taker,address inputToken,uint256 inputAmount,address outputToken,uint256 outputQuote,uint256 outputMin,address recipient,uint16 protocolFeeBps,uint16 partnerFeeBps,address partnerRecipient,bool partnerFeeOnOutput,bool passPositiveSlippageToUser,bytes32[] weirollCommands,bytes[] weirollState,bytes32 nonce,uint256 expiry)"
+    );
+
+    /// @notice EIP-712 type hash of the multi-swap authorization. Same binding rules as
+    ///         `SWAP_AUTHORIZATION_TYPEHASH`, with every parallel array hashed as the keccak of
+    ///         its 32-byte-padded elements.
+    bytes32 public constant MULTI_SWAP_AUTHORIZATION_TYPEHASH = keccak256(
+        "MultiSwapAuthorization(address taker,address[] inputTokens,uint256[] inputAmounts,address[] outputTokens,uint256[] outputQuotes,uint256[] outputMins,address recipient,uint16 protocolFeeBps,uint16 partnerFeeBps,address partnerRecipient,bool partnerFeeOnOutput,bool passPositiveSlippageToUser,bytes32[] weirollCommands,bytes[] weirollState,bytes32 nonce,uint256 expiry)"
+    );
 
     /// @notice Canonical Permit2 deployment. Same address on every chain Permit2 is deployed
     ///         to (Ethereum, Base, Sepolia, Base Sepolia, and beyond). Hardcoded rather than
@@ -97,7 +160,8 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     // -------------------------------------------------------------------------
 
     /// @notice Parameters for a single-input, single-output swap. Assembled by the backend
-    ///         quoting engine and passed verbatim to `swap`.
+    ///         quoting engine, signed by it (see `Authorization`), and passed verbatim to
+    ///         `swap`; any edit after signing reverts `InvalidAuthorization`.
     /// @dev Output semantics: `outputQuote` is the gross quoted output, the ceiling at which
     ///      positive slippage is captured when `passPositiveSlippageToUser` is false and the
     ///      base on which an output-side partner fee is charged. `outputMin` is the net floor:
@@ -129,6 +193,16 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     struct Permit2Data {
         uint256 nonce;
         uint256 deadline;
+        bytes signature;
+    }
+
+    /// @notice Backend-issued authorization accompanying every user-facing swap. `signature` is
+    ///         a 65-byte `r || s || v` ECDSA signature by the active (or grace-window previous)
+    ///         signer over the EIP-712 digest of the swap parameters, `msg.sender`, `nonce` and
+    ///         `expiry`. Each digest can be used once (`consumedAuthorizations`).
+    struct Authorization {
+        bytes32 nonce;
+        uint256 expiry;
         bytes signature;
     }
 
@@ -216,6 +290,18 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Emitted when accrued fees or retained slippage are swept via `transferRouterFunds`.
     event FundsTransferred(address[] tokens, uint256[] amounts, address dest);
 
+    /// @notice Emitted by the constructor, `setSigner` and `revokeSigner`.
+    /// @param previousSigner The signer being replaced (zero when none).
+    /// @param newSigner The signer now active (zero = swaps revert `SignerNotSet`).
+    /// @param previousValidUntil Timestamp until which `previousSigner` is still accepted
+    ///        (zero = immediately rejected).
+    event SignerUpdated(address previousSigner, address newSigner, uint256 previousValidUntil);
+
+    /// @notice Emitted once per accepted authorization, before the swap executes. Off-chain
+    ///         accounting joins `digest` against the authorizations the backend persisted at
+    ///         build time; a use with no matching build row is a forged signature.
+    event AuthorizationUsed(bytes32 indexed digest, address indexed taker, address signer);
+
     // -------------------------------------------------------------------------
     // Storage
     // -------------------------------------------------------------------------
@@ -230,6 +316,22 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Hot-wallet address authorized alongside the owner to call sweep functions.
     ///         Separated from the owner so routine sweeps do not require multisig signatures.
     address public liquidator;
+
+    /// @notice Backend key whose signatures authorize swaps. Zero disables every user-facing
+    ///         swap (fail closed) unless `previousSigner` is still inside its grace window.
+    address public signer;
+
+    /// @notice Signer replaced by the last `setSigner`, still accepted until
+    ///         `previousSignerValidUntil` so in-flight authorizations survive a routine
+    ///         rotation. Cleared by `revokeSigner` and by a zero-grace rotation.
+    address public previousSigner;
+
+    /// @notice Last timestamp (inclusive) at which `previousSigner` is accepted.
+    uint256 public previousSignerValidUntil;
+
+    /// @notice Authorization digests already used. Each backend authorization executes at most
+    ///         once; a reverted swap consumes nothing.
+    mapping(bytes32 => bool) public consumedAuthorizations;
 
     // -------------------------------------------------------------------------
     // Modifiers
@@ -253,12 +355,16 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
      * @param _owner Initial owner (expected to be a multisig). Must be non-zero.
      * @param _liquidator Initial liquidator. Must be non-zero at construction; may later be
      *        set to `address(0)` via `setLiquidator` to disable the role.
+     * @param _signer Initial backend signer. May be zero, in which case every user-facing swap
+     *        reverts `SignerNotSet` until the owner calls `setSigner`.
      */
-    constructor(address _owner, address _liquidator) Ownable(_owner) {
+    constructor(address _owner, address _liquidator, address _signer) Ownable(_owner) {
         if (_owner == address(0)) revert ZeroAddress();
         if (_liquidator == address(0)) revert ZeroAddress();
         liquidator = _liquidator;
         emit LiquidatorUpdated(address(0), _liquidator);
+        signer = _signer;
+        emit SignerUpdated(address(0), _signer, 0);
     }
 
     // -------------------------------------------------------------------------
@@ -307,6 +413,186 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Lift the emergency stop.
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /// @notice Rotate the backend signer. The signer being replaced stays accepted for
+    ///         `graceSeconds` so authorizations already handed to users keep working through a
+    ///         routine rotation; `graceSeconds == 0` rejects it in the same block (the
+    ///         compromise path). `newSigner == address(0)` stops issuance: with a grace it lets
+    ///         in-flight authorizations drain, without one it is a hard stop.
+    /// @dev Only one previous signer is ever honoured. While `signer` is zero (drain mode) the
+    ///      previous-signer slot is left untouched so setting the new key does not cut the drain
+    ///      short. Any grace keeps a possibly-compromised key alive for that long; treat the
+    ///      parameter as a security decision, not a convenience.
+    function setSigner(address newSigner, uint256 graceSeconds) external onlyOwner {
+        if (graceSeconds > MAX_SIGNER_GRACE) revert InvalidGrace(graceSeconds);
+        address current = signer;
+        if (current != address(0)) {
+            if (graceSeconds == 0) {
+                previousSigner = address(0);
+                previousSignerValidUntil = 0;
+            } else {
+                previousSigner = current;
+                previousSignerValidUntil = block.timestamp + graceSeconds;
+            }
+        }
+        signer = newSigner;
+        emit SignerUpdated(current, newSigner, previousSignerValidUntil);
+    }
+
+    /// @notice Fail-closed kill switch: clears the active and the previous signer so every
+    ///         user-facing swap reverts `SignerNotSet` until the owner sets a new key. Callable
+    ///         by the liquidator hot wallet as well as the owner so a key compromise can be
+    ///         stopped without waiting on multisig latency. The revoked key cannot come back
+    ///         through the grace window; only an explicit owner `setSigner` reinstates a key.
+    function revokeSigner() external onlyOwnerOrLiquidator {
+        address current = signer;
+        signer = address(0);
+        previousSigner = address(0);
+        previousSignerValidUntil = 0;
+        emit SignerUpdated(current, address(0), 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Authorization (EIP-712)
+    // -------------------------------------------------------------------------
+
+    /// @notice EIP-712 domain separator for this chain and this Router, recomputed per call.
+    // solhint-disable-next-line func-name-mixedcase
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparator();
+    }
+
+    /// @notice Digest the backend must sign to authorize `swap` / `swapPermit2` with `params`
+    ///         for `taker`. Exposed so off-chain signers can verify hash parity by `eth_call`.
+    function hashSwapAuthorization(SwapParams calldata params, address taker, bytes32 nonce, uint256 expiry)
+        external
+        view
+        returns (bytes32)
+    {
+        return _hashTypedData(_swapStructHash(params, taker, nonce, expiry));
+    }
+
+    /// @notice Digest the backend must sign to authorize `swapMulti` / `swapMultiPermit2`.
+    function hashMultiSwapAuthorization(MultiSwapParams calldata params, address taker, bytes32 nonce, uint256 expiry)
+        external
+        view
+        returns (bytes32)
+    {
+        return _hashTypedData(_multiSwapStructHash(params, taker, nonce, expiry));
+    }
+
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, EIP712_NAME_HASH, EIP712_VERSION_HASH, block.chainid, address(this))
+        );
+    }
+
+    function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    }
+
+    /// @dev EIP-712 encoding of `bytes[]`: keccak of the concatenation of each element's keccak.
+    ///      Element-wise, so re-slicing bytes across neighbouring entries changes the digest.
+    function _hashState(bytes[] calldata state) internal pure returns (bytes32) {
+        uint256 n = state.length;
+        bytes32[] memory hashes = new bytes32[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            hashes[i] = keccak256(state[i]);
+        }
+        return keccak256(abi.encodePacked(hashes));
+    }
+
+    function _swapStructHash(SwapParams calldata p, address taker, bytes32 nonce, uint256 expiry)
+        internal
+        pure
+        returns (bytes32)
+    {
+        // Two static-only encodes concatenated are byte-identical to one 17-word abi.encode;
+        // split to stay under the stack limit.
+        bytes memory head = abi.encode(
+            SWAP_AUTHORIZATION_TYPEHASH,
+            taker,
+            p.inputToken,
+            p.inputAmount,
+            p.outputToken,
+            p.outputQuote,
+            p.outputMin,
+            p.recipient
+        );
+        bytes memory tail = abi.encode(
+            p.protocolFeeBps,
+            p.partnerFeeBps,
+            p.partnerRecipient,
+            p.partnerFeeOnOutput,
+            p.passPositiveSlippageToUser,
+            keccak256(abi.encodePacked(p.weirollCommands)),
+            _hashState(p.weirollState),
+            nonce,
+            expiry
+        );
+        return keccak256(bytes.concat(head, tail));
+    }
+
+    function _multiSwapStructHash(MultiSwapParams calldata p, address taker, bytes32 nonce, uint256 expiry)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 inputTokensHash = keccak256(abi.encodePacked(p.inputTokens));
+        bytes32 inputAmountsHash = keccak256(abi.encodePacked(p.inputAmounts));
+        bytes32 outputTokensHash = keccak256(abi.encodePacked(p.outputTokens));
+        bytes32 outputQuotesHash = keccak256(abi.encodePacked(p.outputQuotes));
+        bytes32 outputMinsHash = keccak256(abi.encodePacked(p.outputMins));
+        bytes32 commandsHash = keccak256(abi.encodePacked(p.weirollCommands));
+        bytes32 stateHash = _hashState(p.weirollState);
+        bytes memory head = abi.encode(
+            MULTI_SWAP_AUTHORIZATION_TYPEHASH,
+            taker,
+            inputTokensHash,
+            inputAmountsHash,
+            outputTokensHash,
+            outputQuotesHash,
+            outputMinsHash,
+            p.recipient
+        );
+        bytes memory tail = abi.encode(
+            p.protocolFeeBps,
+            p.partnerFeeBps,
+            p.partnerRecipient,
+            p.partnerFeeOnOutput,
+            p.passPositiveSlippageToUser,
+            commandsHash,
+            stateHash,
+            nonce,
+            expiry
+        );
+        return keccak256(bytes.concat(head, tail));
+    }
+
+    /// @dev Gate for every user-facing swap; runs before validation, pulls, Permit2 or any
+    ///      external call. Order: expiry window, signer availability, single-use, recovery,
+    ///      signer match. Every signature defect (length, high-s, bad v, zero recovery, wrong
+    ///      key) collapses to `InvalidAuthorization` so callers cannot distinguish them.
+    function _verifyAuthorization(bytes32 structHash, Authorization calldata auth) internal {
+        if (block.timestamp > auth.expiry) revert AuthorizationExpired(auth.expiry);
+        if (auth.expiry > block.timestamp + MAX_AUTHORIZATION_TTL) revert AuthorizationExpiryTooFar(auth.expiry);
+
+        address active = signer;
+        address previous = previousSigner;
+        bool previousValid = previous != address(0) && block.timestamp <= previousSignerValidUntil;
+        if (active == address(0) && !previousValid) revert SignerNotSet();
+
+        bytes32 digest = _hashTypedData(structHash);
+        if (consumedAuthorizations[digest]) revert AuthorizationAlreadyUsed(digest);
+
+        (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecoverCalldata(digest, auth.signature);
+        if (err != ECDSA.RecoverError.NoError || recovered == address(0)) revert InvalidAuthorization();
+        bool accepted = (active != address(0) && recovered == active) || (previousValid && recovered == previous);
+        if (!accepted) revert InvalidAuthorization();
+
+        consumedAuthorizations[digest] = true;
+        emit AuthorizationUsed(digest, msg.sender, recovered);
     }
 
     // -------------------------------------------------------------------------
@@ -752,11 +1038,19 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     // Swap entry points
     // -------------------------------------------------------------------------
 
-    /// @notice Single-input, single-output swap. Pulls input from `msg.sender` (or accepts it as
+    /// @notice Single-input, single-output swap. Verifies the backend authorization over
+    ///         `params` for `msg.sender`, pulls input from `msg.sender` (or accepts it as
     ///         native ETH via `msg.value`), deducts protocol and optional partner fees, forwards
     ///         the remainder to the executor, measures output via balance-diff, optionally caps
     ///         positive slippage, applies output-denominated partner fee, and pays the user.
-    function swap(SwapParams calldata params) external payable nonReentrant whenNotPaused returns (uint256 amountOut) {
+    function swap(SwapParams calldata params, Authorization calldata auth)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (uint256 amountOut)
+    {
+        _verifyAuthorization(_swapStructHash(params, msg.sender, auth.nonce, auth.expiry), auth);
         _validateSwap(params);
         uint256 pulled = _pullInput(params.inputToken, params.inputAmount);
         amountOut = _executeSwap(params, pulled);
@@ -775,7 +1069,8 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
      *      never summed across tokens.
      */
     // forgefmt: disable-next-item
-    function swapMulti(MultiSwapParams calldata params) external payable nonReentrant whenNotPaused returns (uint256[] memory amountsOut) {
+    function swapMulti(MultiSwapParams calldata params, Authorization calldata auth) external payable nonReentrant whenNotPaused returns (uint256[] memory amountsOut) {
+        _verifyAuthorization(_multiSwapStructHash(params, msg.sender, auth.nonce, auth.expiry), auth);
         _validateMultiSwap(params);
         uint256 n = params.inputTokens.length;
         uint256[] memory pulledArr = new uint256[](n);
@@ -785,30 +1080,34 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
         amountsOut = _executeMultiSwap(params, pulledArr);
     }
 
-    /// @notice Permit2 variant of `swap`. Pulls a single ERC20 input via
+    /// @notice Permit2 variant of `swap`. Requires the same backend authorization as `swap`
+    ///         (verified before Permit2 is touched). Pulls a single ERC20 input via
     ///         `ISignatureTransfer.permitTransferFrom` instead of relying on a prior
     ///         `approve`. The user's off-chain EIP-712 signature commits to `(inputToken,
     ///         inputAmount, permit.nonce, permit.deadline)`; replay protection is enforced
     ///         by Permit2. Native ETH inputs are rejected — use `swap` for ETH.
-    function swapPermit2(SwapParams calldata params, Permit2Data calldata permit)
+    function swapPermit2(SwapParams calldata params, Permit2Data calldata permit, Authorization calldata auth)
         external
         nonReentrant
         whenNotPaused
         returns (uint256 amountOut)
     {
+        _verifyAuthorization(_swapStructHash(params, msg.sender, auth.nonce, auth.expiry), auth);
         if (params.inputToken == NATIVE_ETH_SENTINEL) revert NativeInputNotPermit2Compatible();
         _validateSwapCommon(params);
         uint256 pulled = _pullInputViaPermit2(params.inputToken, params.inputAmount, permit);
         amountOut = _executeSwap(params, pulled);
     }
 
-    /// @notice Permit2 variant of `swapMulti`. Pulls every ERC20 input via a single batched
+    /// @notice Permit2 variant of `swapMulti`. Requires the same backend authorization as
+    ///         `swapMulti` (verified before Permit2 is touched). Pulls every ERC20 input via a single batched
     ///         `ISignatureTransfer.permitTransferFrom` call instead of per-token `approve`s.
     ///         The user's single signature commits to the full `(inputTokens[], inputAmounts[],
     ///         permit.nonce, permit.deadline)` set. Native ETH inputs are rejected on any
     ///         slot — use `swapMulti` for ETH.
     // forgefmt: disable-next-item
-    function swapMultiPermit2(MultiSwapParams calldata params, Permit2Data calldata permit) external nonReentrant whenNotPaused returns (uint256[] memory amountsOut) {
+    function swapMultiPermit2(MultiSwapParams calldata params, Permit2Data calldata permit, Authorization calldata auth) external nonReentrant whenNotPaused returns (uint256[] memory amountsOut) {
+        _verifyAuthorization(_multiSwapStructHash(params, msg.sender, auth.nonce, auth.expiry), auth);
         uint256 nIn = params.inputTokens.length;
         for (uint256 i = 0; i < nIn; ++i) {
             if (params.inputTokens[i] == NATIVE_ETH_SENTINEL) revert NativeInputNotPermit2Compatible();
@@ -896,8 +1195,9 @@ contract Router is Ownable2Step, Pausable, ReentrancyGuard {
     /**
      * @notice Sweep accrued balances by routing them through a Weiroll path rather than paying
      *         them out directly. Runs the same fee/slippage pipeline as `swap` but starts from
-     *         Router-held funds: no `transferFrom`, no `msg.value`. Used to convert accumulated
-     *         fee dust into a canonical token. Owner- or liquidator-gated.
+     *         Router-held funds: no `transferFrom`, no `msg.value`, and no backend authorization
+     *         (the caller is already the owner or liquidator and the funds are the Router's own).
+     *         Used to convert accumulated fee dust into a canonical token.
      * @dev Intentionally omits `whenNotPaused`: paired with `transferRouterFunds` so the
      *      liquidator can drain or convert Router-held funds while the swap surface is paused.
      */
