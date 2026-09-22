@@ -74,6 +74,14 @@ contract DeployCreate3 is Script {
     // accounting (Nethermind NM-1048).
     string public constant UNISWAP_V4_SWAP_HELPERS_SALT_NAMESPACE = "infrared.contracts.uniswapv4swaphelpers.v3";
 
+    // Router bytecode changed across the Nethermind NM-1048 remediation (Router-only
+    // executePath binding, outputMin/partner-fee check, backend-signed EIP-712
+    // authorization). Pinned to its own namespace so the Router lands at a fresh
+    // CREATE3 address while the seven stateless helpers keep their v1 addresses.
+    // Bump this (never SALT_VERSION) for every future Router redeploy. .v1 is the
+    // pre-audit Router deployed under the shared SALT_VERSION prefix.
+    string public constant ROUTER_SALT_NAMESPACE = "infrared.contracts.router.v2";
+
     // CREATE3 proxy bytecode hash (from solmate/ZeframLou CREATE3). Used to predict the deployed
     // address locally when no RPC is available (e.g. CI-less preview).
     bytes32 internal constant CREATE3_PROXY_BYTECODE_HASH = keccak256(hex"67363d3d37363d34f03d5260086018f3");
@@ -226,6 +234,13 @@ contract DeployCreate3 is Script {
         return keccak256(bytes(UNISWAP_V4_SWAP_HELPERS_SALT_NAMESPACE));
     }
 
+    /// @notice Pinned CREATE3 salt for the Router.
+    /// @dev Independent of `SALT_VERSION` so a Router redeploy does not move the
+    ///      stateless helpers (and vice versa).
+    function getRouterSalt() public pure returns (bytes32) {
+        return keccak256(bytes(ROUTER_SALT_NAMESPACE));
+    }
+
     /// @notice Predicts the deployment address for a contract
     /// @dev Uses the on-chain factory when available; otherwise reproduces the ZeframLou
     ///      CREATE3 math locally so `preview()` works without an RPC.
@@ -239,6 +254,11 @@ contract DeployCreate3 is Script {
     /// @notice Predicts the ExecutionProxy deployment address using its pinned salt.
     function predictExecutionProxyAddress(address deployer) public view returns (address) {
         return _predictForSalt(deployer, getExecutionProxySalt());
+    }
+
+    /// @notice Predicts the Router deployment address using its pinned salt.
+    function predictRouterAddress(address deployer) public view returns (address) {
+        return _predictForSalt(deployer, getRouterSalt());
     }
 
     function _predictForSalt(address deployer, bytes32 salt) internal view returns (address) {
@@ -330,7 +350,7 @@ contract DeployCreate3 is Script {
         // authorization on every swap; ExecutionProxy is forwarded funds + commands on each call.
         bytes memory routerCode =
             abi.encodePacked(type(Router).creationCode, abi.encode(routerOwner, routerLiquidator, routerSigner));
-        (result.router, result.routerDeployed) = deployIfNeeded(getSalt(ROUTER), routerCode, ROUTER);
+        (result.router, result.routerDeployed) = deployIfNeeded(getRouterSalt(), routerCode, ROUTER);
         result.deployed[1] = result.routerDeployed;
 
         // Deploy ExecutionProxy bound to the Router: executePath is callable only by that
@@ -447,7 +467,7 @@ contract DeployCreate3 is Script {
         address execProxy = predictExecutionProxyAddress(deployer);
         console2.log("ExecutionProxy:", execProxy, isDeployed(execProxy) ? "(deployed)" : "(not deployed)");
 
-        address router = predictAddress(deployer, ROUTER);
+        address router = predictRouterAddress(deployer);
         console2.log("Router:", router, isDeployed(router) ? "(deployed)" : "(not deployed)");
 
         address tupler = predictAddress(deployer, TUPLER);

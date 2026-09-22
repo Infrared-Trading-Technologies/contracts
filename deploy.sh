@@ -240,17 +240,18 @@ generate_registry() {
     local first=true
 
     while IFS= read -r contract; do
-        # ExecutionProxy uses a pinned namespace independent of SALT_VERSION;
-        # see DeployCreate3.s.sol EXECUTION_PROXY_SALT_NAMESPACE. Its bytecode
-        # changes with each VM fix; current bump .v3 -> .v4 lands the
-        # revert-data classification fix and the Router-only executePath
-        # gate (Nethermind NM-1048).
+        # Router, ExecutionProxy and UniswapV4SwapHelpers use pinned namespaces
+        # independent of SALT_VERSION; the literals MUST match the
+        # *_SALT_NAMESPACE constants in DeployCreate3.s.sol or the registry
+        # records the wrong address. Only the seven stateless helpers still
+        # derive their salt from SALT_VERSION.
         local packed
-        if [[ "$contract" == "ExecutionProxy" ]]; then
-            packed="infrared.contracts.executionproxy.v4"
-        else
-            packed="infrared.contracts.${salt_version}${contract}"
-        fi
+        case "$contract" in
+            Router) packed="infrared.contracts.router.v2" ;;
+            ExecutionProxy) packed="infrared.contracts.executionproxy.v4" ;;
+            UniswapV4SwapHelpers) packed="infrared.contracts.uniswapv4swaphelpers.v3" ;;
+            *) packed="infrared.contracts.${salt_version}${contract}" ;;
+        esac
         local salt
         salt=$(cast keccak "$packed")
 

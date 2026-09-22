@@ -43,7 +43,7 @@ ETHERSCAN_API_KEY=YOUR_ETHERSCAN_API_KEY   # V2 key; works across all supported 
 - Only the `deploy` command needs the keystore password; `preview` and `dry-run` simulate using `--sender` only.
 - `SAFE_ADDRESS` is required for mainnet. For testnet it's optional -- the deployer EOA is used as owner if not provided.
 - `ROUTER_SIGNER` (or `ROUTER_SIGNER_<chainId>`) is required on every chain. It is the address of the key the gateway signs swap authorizations with (`go run ./cmd/signer-address` in the backend prints it from the Secret Manager key). A mismatch makes the gateway refuse to build.
-- Redeploying the Router (any bytecode change) needs a `SALT_VERSION` bump; one bump covers every Router change since the last deploy.
+- Redeploying the Router (any bytecode change) needs a bump of `ROUTER_SALT_NAMESPACE` in `script/DeployCreate3.s.sol` and the matching literal in `deploy.sh`. `SALT_VERSION` only governs the seven stateless helpers; do not bump it for a Router change.
 
 See `.env.example` for the full template.
 
