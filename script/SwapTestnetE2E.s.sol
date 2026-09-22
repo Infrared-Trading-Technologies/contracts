@@ -8,7 +8,6 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { Router } from "../src/Router.sol";
 import { WeirollTestHelper } from "../test/helpers/WeirollTestHelper.sol";
 import { RouterAuth } from "../test/helpers/RouterAuth.sol";
-import { UniV3SwapHelper } from "./lib/UniV3SwapHelper.sol";
 import { SwapE2EAssert } from "./lib/SwapE2EAssert.sol";
 
 /// @title SwapTestnetE2E
@@ -40,8 +39,14 @@ contract SwapTestnetE2E is Script {
     address internal constant USDC_SEPOLIA = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
     address internal constant USDC_BASE_SEPOLIA = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
 
-    /// @dev Selector for `UniV3SwapHelper.swap(address,address,address,uint256,uint256)`.
-    bytes4 internal constant HELPER_SWAP_SELECTOR = bytes4(keccak256("swap(address,address,address,uint256,uint256)"));
+    /// @dev SwapRouter02 `exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))`.
+    ///      Called through the Weiroll VALUECALL + FLAG_DATA path with the full calldata staged
+    ///      in a state slot, because the in-tree VM has no DELEGATECALL branch and a 7-field
+    ///      struct does not fit Weiroll's short-command argument list.
+    bytes4 internal constant EXACT_INPUT_SINGLE_SELECTOR = 0x04e45aaf;
+
+    /// @dev 0.30% pool tier: the WETH/USDC pool with liquidity on both testnets.
+    uint24 internal constant POOL_FEE = 3000;
 
     uint16 internal constant PROTOCOL_FEE_BPS = 30; // 0.30%
     uint16 internal constant PARTNER_FEE_BPS = 25; // 0.25%
@@ -53,7 +58,6 @@ contract SwapTestnetE2E is Script {
         address weth;
         address usdc;
         address uniRouter;
-        address helper;
         address deployer;
         uint256 signerPk;
     }
@@ -76,15 +80,13 @@ contract SwapTestnetE2E is Script {
 
         Ctx memory c = _loadCtx(chainId);
 
-        // Deploy the Weiroll-target helper once per chain. Same broadcast wallet covers
-        // the deploy and all four legs, so legs run sequentially under the same nonce series.
-        vm.startBroadcast();
-        c.helper = address(new UniV3SwapHelper());
         // One-time approvals: Router pulls WETH for leg 1; Permit2 pulls WETH for leg 3.
+        // Same broadcast wallet covers these and all legs, so everything runs under one
+        // nonce series.
+        vm.startBroadcast();
         IERC20(c.weth).approve(c.router, type(uint256).max);
         IERC20(c.weth).approve(PERMIT2_ADDR, type(uint256).max);
         vm.stopBroadcast();
-        console2.log("Helper deployed:", c.helper);
 
         _legErc20Approval(c);
         _legNativeInput(c);
@@ -165,26 +167,19 @@ contract SwapTestnetE2E is Script {
         if (outputQuote == 0) revert("LEG2_QUOTE env required (target USDC output for native leg)");
 
         // Router forwards `LEG_INPUT_AMOUNT - protocolFee - inputPartnerFee` to executor;
-        // the Weiroll path wraps that exact amount to WETH, then swaps via the helper.
+        // the Weiroll path wraps that exact amount to WETH, approves SwapRouter02, then swaps.
         uint256 forwardAmount = (LEG_INPUT_AMOUNT * (10_000 - PROTOCOL_FEE_BPS - PARTNER_FEE_BPS)) / 10_000;
 
-        bytes[] memory state = new bytes[](6);
-        state[0] = abi.encode(forwardAmount); // value for weth.deposit()
-        state[1] = abi.encode(c.uniRouter);
-        state[2] = abi.encode(c.weth);
-        state[3] = abi.encode(c.usdc);
-        state[4] = abi.encode(forwardAmount); // amountIn for helper.swap
-        state[5] = abi.encode(uint256(1)); // Uniswap-level amountOutMin
+        bytes[] memory state = new bytes[](4);
+        state[0] = abi.encode(forwardAmount); // value for weth.deposit() and approve amount
+        state[1] = abi.encode(c.uniRouter); // approve spender
+        state[2] = abi.encode(uint256(0)); // VALUECALL value for the swap (no ETH)
+        state[3] = _exactInputSingleCalldata(c, forwardAmount);
 
-        bytes32[] memory commands = new bytes32[](2);
+        bytes32[] memory commands = new bytes32[](3);
         commands[0] = WeirollTestHelper.buildWethDepositCommand(c.weth, 0);
-        commands[1] = WeirollTestHelper.encodeCommand(
-            HELPER_SWAP_SELECTOR,
-            WeirollTestHelper.FLAG_CT_DELEGATECALL,
-            WeirollTestHelper.indices5(1, 2, 3, 4, 5),
-            WeirollTestHelper.IDX_END_OF_ARGS,
-            c.helper
-        );
+        commands[1] = WeirollTestHelper.buildApproveCommand(c.weth, 1, 0);
+        commands[2] = WeirollTestHelper.buildValueCallWithRawData(c.uniRouter, 2, 3);
 
         Router.SwapParams memory params = Router.SwapParams({
             inputToken: NATIVE_ETH,
@@ -265,21 +260,15 @@ contract SwapTestnetE2E is Script {
     {
         uint256 forwardAmount = (LEG_INPUT_AMOUNT * (10_000 - PROTOCOL_FEE_BPS - PARTNER_FEE_BPS)) / 10_000;
 
-        bytes[] memory state = new bytes[](5);
-        state[0] = abi.encode(c.uniRouter);
-        state[1] = abi.encode(c.weth);
-        state[2] = abi.encode(c.usdc);
-        state[3] = abi.encode(forwardAmount);
-        state[4] = abi.encode(uint256(1));
+        bytes[] memory state = new bytes[](4);
+        state[0] = abi.encode(c.uniRouter); // approve spender
+        state[1] = abi.encode(forwardAmount); // approve amount (the WETH the Router forwarded)
+        state[2] = abi.encode(uint256(0)); // VALUECALL value for the swap (no ETH)
+        state[3] = _exactInputSingleCalldata(c, forwardAmount);
 
-        bytes32[] memory commands = new bytes32[](1);
-        commands[0] = WeirollTestHelper.encodeCommand(
-            HELPER_SWAP_SELECTOR,
-            WeirollTestHelper.FLAG_CT_DELEGATECALL,
-            WeirollTestHelper.indices5(0, 1, 2, 3, 4),
-            WeirollTestHelper.IDX_END_OF_ARGS,
-            c.helper
-        );
+        bytes32[] memory commands = new bytes32[](2);
+        commands[0] = WeirollTestHelper.buildApproveCommand(c.weth, 0, 1);
+        commands[1] = WeirollTestHelper.buildValueCallWithRawData(c.uniRouter, 2, 3);
 
         return Router.SwapParams({
             inputToken: c.weth,
@@ -296,5 +285,16 @@ contract SwapTestnetE2E is Script {
             weirollCommands: commands,
             weirollState: state
         });
+    }
+
+    /// @dev Raw `exactInputSingle` calldata for the FLAG_DATA command. The ExecutionProxy is
+    ///      `msg.sender` to SwapRouter02 (it holds the forwarded WETH and approved it in the
+    ///      previous command); `recipient` is the Router so the output lands where the Router
+    ///      measures its balance delta. Uniswap-level `amountOutMinimum` is 1: the Router's
+    ///      `outputMin` is the slippage floor under test.
+    function _exactInputSingleCalldata(Ctx memory c, uint256 amountIn) internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(
+            EXACT_INPUT_SINGLE_SELECTOR, c.weth, c.usdc, POOL_FEE, c.router, amountIn, uint256(1), uint160(0)
+        );
     }
 }
