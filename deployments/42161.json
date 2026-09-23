@@ -1,23 +1,24 @@
 {
   "chainId": 42161,
   "chainName": "Arbitrum One",
-  "deployedAt": "2026-07-17T17:03:51Z",
+  "deployedAt": "2026-09-23T15:55:29Z",
   "deployer": "0xD1c4f07c277Bcc155693E3a569A9587E9237bA07",
   "owner": "0xb0217656A8160fa6D601c95844a73173237DEcFE",
+  "signer": "0x9eceD7435c3EBA9F1C5ca01732729E56061C4C02",
   "contracts": {
     "ExecutionProxy": {
-      "address": "0x1868f62A7001de25947741a886720EacF62655AB",
-      "salt": "0xe5695b3064e7fc6a22129e383dc584c25654a8213cec45c672e2044f856bdfd7",
+      "address": "0xD29c31C5752af83441627a19269A4Ad1087374fe",
+      "salt": "0x0cc9e19d87e88336a3d7d9e9b82cfe01295831cbaa54cd41a9c1ae14ae0b23f2",
       "verified": true,
-      "txHash": "0x8d48a368834be3183ee7874c28a3a8c4ac38917bb12eb2b40ebd48f847f59eb9",
-      "blockNumber": 484867882
+      "txHash": "0xbcfd559c333ebbeb6c8d222901430255f9934b1def389090d42ba698baa511a3",
+      "blockNumber": 508170172
     },
     "Router": {
-      "address": "0xED79938d83089D610C3d38DAe52B771A11614B41",
-      "salt": "0xcf23702408e9d272c8da1a9a59547690dfcecf0c8c6e6067014598d60ccd5a42",
+      "address": "0x00893A26A3B95920bd6a84130c9d69231F2241AE",
+      "salt": "0x08f34ee24b2f2ae41bffda9e61986870bf4224d6c518b47b0ac589398b34edee",
       "verified": true,
-      "txHash": "0xf187eca11175f0458bbc695b3170e8e60378e8f5ee51f1fb7ddafa1aa4648fb0",
-      "blockNumber": 484867891
+      "txHash": "0x6e4a4cccd49326595b4582697bd82ba34465d5826c9da81d392e1a43d392d798",
+      "blockNumber": 508170163
     },
     "Tupler": {
       "address": "0x1AbbF67fBf2b8Fbc04B833A3Db4526FFda55b8e2",
@@ -69,12 +70,15 @@
       "blockNumber": 484867942
     },
     "UniswapV4SwapHelpers": {
-      "address": "0xAd1630F1C8eB7e7d0875FBB13e1dec4497E0D591",
-      "salt": "0xb511bc53e1cd9fb73bea3fb9cffd645870bcc6ac3d69728423180fe5d25b7000",
+      "address": "0x867B43f29496C69f6049deee4dAF755D10F0ab9d",
+      "salt": "0xe8642e9c600139382096228e6f2d7465e517b502a5517fb2ef5fe6bfb7338750",
       "verified": true,
-      "txHash": "0x8de77fc588cd3926f4ae4c7db855a2e2cc9bfb960be98e1bde97e4e483dbfece",
-      "blockNumber": 484867949
+      "txHash": "0xcfe59511e88c93fce18573d0584fc58afe3f36acd5eea112626a6658fa627fb9",
+      "blockNumber": 508170181
     }
   },
+  "previousRouters": [
+    "0xED79938d83089D610C3d38DAe52B771A11614B41"
+  ],
   "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
 }
