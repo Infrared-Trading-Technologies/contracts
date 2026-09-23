@@ -1,9 +1,77 @@
 {
   "chainId": 11155111,
   "chainName": "Sepolia Testnet",
-  "deployedAt": "2026-05-19T20:18:14Z",
+  "deployedAt": "2026-09-22T14:29:49Z",
   "deployer": "0xD1c4f07c277Bcc155693E3a569A9587E9237bA07",
   "owner": "0xb0217656A8160fa6D601c95844a73173237DEcFE",
-  "contracts": {"ExecutionProxy":{"address":"0x1868f62A7001de25947741a886720EacF62655AB","salt":"0xe5695b3064e7fc6a22129e383dc584c25654a8213cec45c672e2044f856bdfd7","verified":false,"txHash":"0x0aed06634a80dfc17ad4aa56b7a81c9902fcafe08b9c2af5cbf2b3a2f8fa3d78","blockNumber":10881540},"Router":{"address":"0xED79938d83089D610C3d38DAe52B771A11614B41","salt":"0xcf23702408e9d272c8da1a9a59547690dfcecf0c8c6e6067014598d60ccd5a42","verified":false,"txHash":"0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9","blockNumber":10756255},"Tupler":{"address":"0x1AbbF67fBf2b8Fbc04B833A3Db4526FFda55b8e2","salt":"0x44c13c2358951792cfdc0d558a58e0a0500a8c5a5d2902ffbf2c36047b727a3b","verified":false,"txHash":"0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9","blockNumber":10756255},"Integer":{"address":"0x2CB4EEB698b771048405a046fd7fBC34133F2C40","salt":"0x9f6b8bccec85325cbb3705e9cceab8e9c2d0952878cb98893a8abd02471a1f04","verified":false,"txHash":"0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9","blockNumber":10756255},"Bytes32":{"address":"0x6F87EdC08983E4FD3810953bA5a2d56DCe9775c3","salt":"0xf04e6af6d5fc0a511d651246d2ada742f1b6f46573186046393880ac2d7a0836","verified":false,"txHash":"0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9","blockNumber":10756255},"BlockchainInfo":{"address":"0x2F4abb94d70F94bC44d90A806Be4AC8640000869","salt":"0xaf54df03108daf7917c135b4db85ef912acf4e15ec2666d9e4793464ea9f4d0a","verified":false,"txHash":"0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9","blockNumber":10756255},"ArraysConverter":{"address":"0x0Ba8D8de6412232FE41AAcb98d4e1FCcfbF0b47f","salt":"0x110727a197cc76e5abd1eab0d6173fe2ffec4dbb21c580b8ec4c1b0a5dcf9a35","verified":false,"txHash":"0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9","blockNumber":10756255}},
+  "signer": "0x11E85DeCD7E6c568a08f26aBBDC57B327Ba1bD0a",
+  "contracts": {
+    "ExecutionProxy": {
+      "address": "0xD29c31C5752af83441627a19269A4Ad1087374fe",
+      "salt": "0x0cc9e19d87e88336a3d7d9e9b82cfe01295831cbaa54cd41a9c1ae14ae0b23f2",
+      "verified": true,
+      "txHash": "0x64492018a211b2b473dfd71f75a20abd1e8faccebb290aa43649d49b9346800a",
+      "blockNumber": 11758488
+    },
+    "Router": {
+      "address": "0x00893A26A3B95920bd6a84130c9d69231F2241AE",
+      "salt": "0x08f34ee24b2f2ae41bffda9e61986870bf4224d6c518b47b0ac589398b34edee",
+      "verified": true,
+      "txHash": "0x576a006803476c6e79f961c81845e0c6594a5cbd69546e63db8a90eed8829218",
+      "blockNumber": 11758488
+    },
+    "Tupler": {
+      "address": "0x1AbbF67fBf2b8Fbc04B833A3Db4526FFda55b8e2",
+      "salt": "0x44c13c2358951792cfdc0d558a58e0a0500a8c5a5d2902ffbf2c36047b727a3b",
+      "verified": true,
+      "txHash": "0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9",
+      "blockNumber": 10756255
+    },
+    "Integer": {
+      "address": "0x2CB4EEB698b771048405a046fd7fBC34133F2C40",
+      "salt": "0x9f6b8bccec85325cbb3705e9cceab8e9c2d0952878cb98893a8abd02471a1f04",
+      "verified": true,
+      "txHash": "0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9",
+      "blockNumber": 10756255
+    },
+    "Bytes32": {
+      "address": "0x6F87EdC08983E4FD3810953bA5a2d56DCe9775c3",
+      "salt": "0xf04e6af6d5fc0a511d651246d2ada742f1b6f46573186046393880ac2d7a0836",
+      "verified": true,
+      "txHash": "0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9",
+      "blockNumber": 10756255
+    },
+    "BlockchainInfo": {
+      "address": "0x2F4abb94d70F94bC44d90A806Be4AC8640000869",
+      "salt": "0xaf54df03108daf7917c135b4db85ef912acf4e15ec2666d9e4793464ea9f4d0a",
+      "verified": true,
+      "txHash": "0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9",
+      "blockNumber": 10756255
+    },
+    "ArraysConverter": {
+      "address": "0x0Ba8D8de6412232FE41AAcb98d4e1FCcfbF0b47f",
+      "salt": "0x110727a197cc76e5abd1eab0d6173fe2ffec4dbb21c580b8ec4c1b0a5dcf9a35",
+      "verified": true,
+      "txHash": "0x38bda3ea1401b361cd21e0b709f9e3f1f8d2d81c3013abe90afc0d7ca71162f9",
+      "blockNumber": 10756255
+    },
+    "MathHelpers": {
+      "address": "0x569716eB86fdF1179ee2AFC9FaEf4e56bA01658a",
+      "salt": "0x09c7f66e5a50537c982df2f6c13bf4d91737e813aaf1aa80b053da745d2774b2",
+      "verified": true,
+      "txHash": "0x758e5fbf1368c65caf2c6d6ef0ad73bfd996af88651f1b35d0a57ae28700083f",
+      "blockNumber": 11758488
+    },
+    "SignedMathHelpers": {
+      "address": "0xd376936Bf1E1bb691846f2A7D3244dd95e62Fb35",
+      "salt": "0x0355273358dcad0b3492303581eaefe2cb023fbe2d92141d6d16043033022928",
+      "verified": true,
+      "txHash": "0x355b9613dd36effd41d3ead1937c336c824b6216072b8d478666a5dffcf75b0b",
+      "blockNumber": 11758488
+    }
+  },
+  "previousRouters": [
+    "0xED79938d83089D610C3d38DAe52B771A11614B41"
+  ],
   "create3Factory": "0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
 }
