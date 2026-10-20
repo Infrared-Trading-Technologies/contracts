@@ -33,8 +33,16 @@ interface ICREATE3Factory {
 /// @notice Idempotent deployment script using CREATE3 for deterministic addresses
 /// @dev Uses ZeframLou's CREATE3 factory for consistent addresses across chains
 contract DeployCreate3 is Script {
-    // CREATE3 Factory - same address on all supported chains
-    address public constant CREATE3_FACTORY = 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf;
+    // CREATE3 Factory. ZeframLou's instance is the default; deploy.sh exports
+    // CREATE3_FACTORY per chain (chains.json) for chains where that instance
+    // cannot exist, e.g. Robinhood Chain. Addresses derived through a different
+    // factory differ from other chains by construction.
+    address public constant DEFAULT_CREATE3_FACTORY = 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf;
+    address public immutable CREATE3_FACTORY;
+
+    constructor() {
+        CREATE3_FACTORY = vm.envOr("CREATE3_FACTORY", DEFAULT_CREATE3_FACTORY);
+    }
 
     // Default salt version (can be overridden via SALT_VERSION env var)
     string public constant DEFAULT_SALT_VERSION = "v1";
@@ -271,7 +279,7 @@ contract DeployCreate3 is Script {
     /// @dev Local reimplementation of ZeframLou CREATE3Factory.getDeployed. The factory namespaces
     ///      salts by hashing `(deployer, salt)` before delegating to solmate's CREATE3 algorithm
     ///      (CREATE2 proxy deploy, then CREATE with nonce 1 from the proxy).
-    function _predictCreate3Address(address deployer, bytes32 salt) internal pure returns (address) {
+    function _predictCreate3Address(address deployer, bytes32 salt) internal view returns (address) {
         bytes32 hashedSalt = keccak256(abi.encode(deployer, salt));
         address proxy = address(
             uint160(

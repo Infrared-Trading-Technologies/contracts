@@ -153,8 +153,23 @@ validate_safe_address() {
     fi
 }
 
-# CREATE3 factory address (same on all supported chains)
-CREATE3_FACTORY="0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
+# CREATE3 factory. ZeframLou's instance at 0x9fBB… is the default; a chain
+# where it cannot exist (it was an EOA nonce-0 deploy, so only its original
+# deployer could reproduce it) sets `create3Factory` in chains.json to our own
+# instance. The script exports the resolved address for DeployCreate3.s.sol.
+DEFAULT_CREATE3_FACTORY="0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf"
+CREATE3_FACTORY="$DEFAULT_CREATE3_FACTORY"
+
+resolve_create3_factory() {
+    local chain_id="$1"
+    local configured
+    configured=$(get_chain_config "$chain_id" "create3Factory")
+    CREATE3_FACTORY="${configured:-$DEFAULT_CREATE3_FACTORY}"
+    export CREATE3_FACTORY
+    if [[ "$CREATE3_FACTORY" != "$DEFAULT_CREATE3_FACTORY" ]]; then
+        echo -e "${YELLOW}Chain $chain_id uses a non-default CREATE3 factory ($CREATE3_FACTORY); deployed addresses will differ from other chains.${NC}"
+    fi
+}
 
 check_create3_factory() {
     local rpc_url="$1"
@@ -398,6 +413,7 @@ check_v4_layout() {
 
 deploy() {
     local chain_id="$1"
+    resolve_create3_factory "$chain_id"
 
     # Validate chain
     local chain_name
@@ -533,6 +549,7 @@ deploy() {
 
 preview() {
     local chain_id="$1"
+    resolve_create3_factory "$chain_id"
 
     # Validate chain
     local chain_name
@@ -576,6 +593,7 @@ preview() {
 
 dry_run() {
     local chain_id="$1"
+    resolve_create3_factory "$chain_id"
 
     # Validate chain
     local chain_name
@@ -652,11 +670,21 @@ verify() {
     display_name=$(get_chain_config "$chain_id" "displayName")
     echo -e "${GREEN}Verifying contracts on $display_name${NC}"
 
-    # Get API key env var
-    local api_key_env
-    api_key_env=$(get_chain_config "$chain_id" "explorer.apiKeyEnv")
-    check_env "$api_key_env"
-    local api_key="${!api_key_env}"
+    # Explorer verifier. Etherscan-style explorers need an API key; Blockscout
+    # instances (explorer.verifier == "blockscout") take none.
+    local verifier
+    verifier=$(get_chain_config "$chain_id" "explorer.verifier")
+    local api_key=""
+    local -a verifier_args=()
+    if [[ "$verifier" == "blockscout" ]]; then
+        verifier_args=(--verifier blockscout)
+    else
+        local api_key_env
+        api_key_env=$(get_chain_config "$chain_id" "explorer.apiKeyEnv")
+        check_env "$api_key_env"
+        api_key="${!api_key_env}"
+        verifier_args=(--etherscan-api-key "$api_key")
+    fi
 
     local rpc_env
     rpc_env=$(get_chain_config "$chain_id" "rpcEnv")
@@ -729,7 +757,7 @@ verify() {
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
-                --etherscan-api-key "$api_key" \
+                "${verifier_args[@]}" \
                 --constructor-args "$(cast abi-encode 'constructor(address,address,address)' "$router_owner" "$router_liquidator" "$router_signer")" \
                 --watch && verify_ok=1
         elif [[ "$contract" == "UniswapV4SwapHelpers" ]]; then
@@ -742,7 +770,7 @@ verify() {
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
-                --etherscan-api-key "$api_key" \
+                "${verifier_args[@]}" \
                 --constructor-args "$(cast abi-encode 'constructor(address,address)' "$universal_router" "$permit2_addr")" \
                 --watch && verify_ok=1
         elif [[ "$contract" == "ExecutionProxy" ]]; then
@@ -757,7 +785,7 @@ verify() {
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
-                --etherscan-api-key "$api_key" \
+                "${verifier_args[@]}" \
                 --constructor-args "$(cast abi-encode 'constructor(address)' "$router_addr")" \
                 --watch && verify_ok=1
         else
@@ -765,7 +793,7 @@ verify() {
             forge verify-contract "$addr" "$path" \
                 --chain-id "$chain_id" \
                 --verifier-url "$api_url" \
-                --etherscan-api-key "$api_key" \
+                "${verifier_args[@]}" \
                 --watch && verify_ok=1
         fi
 
