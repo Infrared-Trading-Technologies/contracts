@@ -66,6 +66,7 @@ jobs:
         with:
           fail-on: none
           sarif: results.sarif
+          slither-args: --filter-paths "dependencies/"
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
